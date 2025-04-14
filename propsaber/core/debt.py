@@ -11,6 +11,7 @@ import numpy as np
 import numpy_financial as npf
 import logging
 from typing import Dict, Tuple, Optional
+import random
 from .utils import simulation_error_handler
 
 # Import constants from the current package
