@@ -841,14 +841,89 @@ def main():
                                    fig_comp.update_layout(title_text="Levered IRR Distributions (Side-by-Side)", height=400, template="plotly_white", bargap=0.1, margin=dict(t=50, b=10)); fig_comp.update_xaxes(tickformat=".1%", title_text="Levered IRR", row=1, col=1); fig_comp.update_xaxes(tickformat=".1%", title_text="Levered IRR", row=1, col=2); fig_comp.update_yaxes(title_text="Frequency", row=1, col=1); st.plotly_chart(fig_comp, use_container_width=True)
                  elif scenario_a == scenario_b: st.warning("Please select two different scenarios to compare.")
 
-        with tabs[tab_keys.index("ℹ️ Guide")]:
-             # ... (Guide tab code unchanged) ...
-            st.markdown("""... Guide Content ...""")
+            with tabs[tab_keys.index("ℹ️ Guide")]:
+                st.markdown("""
+                    ## Overview & Instructions
+
+                    Welcome to **PropSaber**, a next-generation real estate simulation model built for serious multifamily investors.
+
+                    PropSaber replaces oversimplified spreadsheets with a dynamic, scenario-based engine—giving you insights into how deals might *actually* perform, not just how they look on paper.
+
+                    Is it complicated? Yes and no.
+
+                    Under the hood, it’s powered by a sophisticated simulation engine using Monte Carlo methods, stochastic processes, and regime switching. But on the surface, it’s been designed for **practitioners, by practitioners**, with one clear goal: **help you make better investment decisions**.
+
+                    Whether you’re underwriting a stabilized asset, testing downside risk, or trying to impress an investment committee—PropSaber gives you a richer view of returns, risks, and variability, with tools that feel intuitive and grounded in how investors actually think.
+
+                    ### Quick Start Guide
+
+                    1.  **Set Inputs**: Use the sidebar on the left. Click `>` to expand sections. Adjust values with the **slider** for quick changes or **type exact numbers** in the box for precision. Defaults are a solid starting point.
+                        * Input fields marked with `($)` expect dollar amounts.
+                        * Fields marked with `(%)` expect percentages (e.g., enter `5.0` for 5%).
+                        * **Financing:** Choose "Fixed" or "Floating" rate types. *Note:* The "Floating" option requires the `Pensford_Forward_Curve.csv` file to be present.
+                    2.  **Run Simulation**: Click the **🚀 Run Simulation** button at the top of the sidebar to generate results based on your inputs.
+                    3.  **Explore Results**: Check the tabs (e.g., Summary, IRR, Pro-Forma, Dynamics, Risk) to see outcomes and risks.
+                    4.  **Iterate**: Tweak inputs and rerun to compare scenarios. The model is designed for rapid iteration.
+                    5.  **Save/Load/Compare**: Use **💾 Scenario Files** in the sidebar or the **🗂️ Scenarios** tab to save, load, or compare different input sets and their results. After loading, click **Run Simulation** again.
+
+                    ### Why Use This Tool?
+
+                    Most models give you a single outcome. PropSaber shows you the entire range—and how likely each scenario is.
+
+                    - **Monte Carlo Simulation**: Generates thousands of future scenarios based on your rent, expense, vacancy, and exit assumptions.
+                    - **Realistic Dynamics**: Rent, OpEx, and vacancy evolve over time using **Geometric Brownian Motion** and **mean-reverting** processes, not flat lines. Interest rates (if floating) follow a simulated path based on the forward curve, volatility, and persistence.
+                    - **Market Regime Switching**: Simulates transitions between “Normal” and “Recession” market states using your probability assumptions in the "Rent" section, affecting rent growth.
+                    - **Correlations**: Optionally link random shocks between rent, expenses, and vacancy via the "Correlation" section.
+                    - **Sophisticated Debt Modeling**: Accurately model **Fixed** or **Floating** rate debt, including Interest Only or Amortizing options (Fixed only), realistic floating rate mechanics, and refinancing scenarios (see below).
+                    - **Risk Metrics That Matter**: Outputs include Sharpe ratio, downside probability (Prob. Loss, Prob. Below Hurdle), Value-at-Risk (VaR), Conditional VaR (CVaR), and Coefficient of Variation – all accessible on the "Risk" tab.
+
+                    ### Key Features in the Financing Section
+
+                    The **Financing** section lets you model debt with real-world flexibility, including the ability to simulate a refinancing event:
+
+                    * **Loan-to-Cost Ratio**: Sets the initial loan amount as a percentage of the purchase price.
+                    * **Rate Type**:
+                        * **Fixed**: Uses the specified "Fixed Loan Interest Rate". You can also choose:
+                            * **Loan Type**: "Interest Only" (no principal paid until sale) or "Amortizing" (principal paid down over the "Amortization Period").
+                        * **Floating**: Simulates a variable rate based on several factors. *Floating rate loans are currently modeled as Interest Only.*
+                            * **Forward SOFR Curve**: The starting point for each year's rate comes from the `Pensford_Forward_Curve.csv` file.
+                            * **Interest Rate Volatility**: Adds random annual shocks (normally distributed noise) to the forward SOFR rate.
+                            * **Rate Persistence (φ)**: Smooths the `SOFR + shock` component over time using an AR(1) process. A value near 0 means little smoothing; a value near 1 means high persistence from year to year.
+                            * **SOFR Floor**: After applying volatility and persistence to the base SOFR rate, the model compares this value to the floor. It takes the **higher** of the two. The rate component (before spread) will not drop below this floor. Enter as a percentage (e.g., `1.0` for 1%).
+                            * **Spread Over SOFR**: This fixed spread is added **last**, after the floor has been applied, to determine the final `effective_rate` used for calculating interest payments.
+                    * **Refinancing Options**: Enable refinancing to model a loan reset during the hold period, reflecting real-world strategies to capitalize on property value appreciation or rate changes:
+                        * **Enable Refinancing**: Check this box to activate refinancing. If unchecked, the original loan terms persist throughout the hold period.
+                        * **Refinancing Year**: Specify the year (e.g., Year 3) when the refinance occurs. The new loan terms apply starting at the beginning of this year.
+                        * **New Loan-to-Value (LTV) Ratio (%)**: Set the target LTV for the new loan, based on the estimated property value in the refinancing year (calculated using NOI and the mean exit cap rate as a proxy).
+                        * **Refinancing Costs (% of Loan)**: Enter the costs associated with refinancing (e.g., 1% of the new loan amount) as a percentage. These costs are deducted from the net cash proceeds or added to the loan balance.
+                        * **New Amortization Period (Years)**: Define the amortization period for the new loan (e.g., 30 years). The refinanced loan is modeled as amortizing, not interest-only.
+                        * **Fixed Rate Spread to SOFR (%)**: Specify the spread added to the SOFR rate in the refinancing year to determine the new fixed interest rate. The model uses the forward SOFR curve for that year as the base rate.
+                        * **Impact on Cash Flows**: Refinancing can generate cash proceeds (if the new loan exceeds the existing balance minus costs) or require cash injection (if the new loan is smaller). These cash flows are reflected in the Levered Cash Flow in the refinancing year, impacting IRR calculations.
+
+                    ### Exploring Results
+
+                    - **Summary Tab**: Shows key KPIs and an initial snapshot based on Year 0 inputs and estimated Year 1 debt service.
+                    - **IRR Tab**: Displays distributions of Unlevered and Levered IRR outcomes, reflecting any refinancing cash flows.
+                    - **Pro-Forma Tab**: Presents the average annual cash flows across all simulations, including income, expenses, CapEx, debt service (interest and principal reflecting fixed/floating rates and refinancing), and sale proceeds.
+                    - **Dynamics Tab**: Visualizes simulation behavior over time, including:
+                        * Rent path distribution vs. underlying fair value rent.
+                        * Vacancy rate distribution per year.
+                        * Relationship between terminal rent growth and exit cap rates.
+                        * *(If Floating Rate)* The distribution of the simulated underlying SOFR rate (SOFR + Volatility + Persistence, *before* Spread) compared to the input Forward SOFR Curve.
+                        * Loan balance and LTV over time, showing the impact of refinancing on debt levels.
+                    - **Risk Tab**: Provides detailed risk metrics based on the Levered IRR distribution, accounting for refinancing variability.
+                    - **Audit Tab**: Allows detailed inspection of the cash flows and metrics for any single simulation run, including refinancing proceeds or costs.
+                    - **Exit Tab**: Shows distributions for the Net Exit Value and the simulated Exit Cap Rate.
+                    - **Sensitivity Tab**: Run sensitivity analyses on key inputs, including refinancing parameters, to see their impact on Mean Levered IRR.
+                    - **Scenarios Tab**: Save named snapshots of your inputs *and results*, load previous scenarios, and compare two scenarios side-by-side, including differences in refinancing strategies.
+
+                    ---
+
+                    *Disclaimer: This is a simulation tool. Results are illustrative and depend heavily on input assumptions. Not financial advice.*
+                """)
 
 
 # --- Entry Point Check ---
 if __name__ == "__main__":
-    main()
-
-if __name__ == "__main__":
     main()
+
