@@ -371,20 +371,19 @@ def main():
                 loan_amount_val = inputs_used_for_run.loan_amount # Use property
                 # --- CORRECTED CALL TO calculate_debt_service ---
                 interest_yr1, principal_yr1, _, effective_rate_yr1, _ = calculate_debt_service(
-                    current_loan_type=inputs_used_for_run.loan_type, # Use current_... names
-                    current_loan_amount=loan_amount_val,
-                    current_interest_rate=inputs_used_for_run.interest_rate,
-                    current_loan_term_yrs=inputs_used_for_run.loan_term_yrs,
-                    current_is_variable_rate=inputs_used_for_run.is_variable_rate,
-                    current_balance=loan_amount_val, # Starting balance = loan amount
-                    year=1,
-                    sofr_spread=inputs_used_for_run.sofr_spread,
-                    forward_curve=forward_curve_data, # Pass loaded data
-                    std_dev_curve=std_dev_curve_data, # Pass loaded data
-                    sofr_floor=inputs_used_for_run.sofr_floor,
-                    rate_persistence_phi=inputs_used_for_run.rate_persistence_phi,
-                    volatility_scalar=inputs_used_for_run.volatility_scalar,
-                    prev_volatile_sofr_comp=None # No previous component for Year 1
+                   current_loan_type=inputs.loan_type,
+                   current_interest_rate=inputs.interest_rate,
+                   current_is_variable_rate=inputs.is_variable_rate,
+                   current_balance=inputs.loan_amount,
+                   monthly_payment=inputs.monthly_payment,
+                   year=1,
+                   sofr_spread=inputs.sofr_spread,
+                   forward_curve=forward_curve,
+                   std_dev_curve=std_dev_curve,
+                   sofr_floor=inputs.sofr_floor,
+                   rate_persistence_phi=inputs.rate_persistence_phi,
+                   volatility_scalar=inputs.volatility_scalar,
+                   prev_volatile_sofr_component=None
                 )
                 # --- END OF CORRECTION ---
                 if not np.isfinite(interest_yr1): interest_yr1 = 0;
