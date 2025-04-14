@@ -1065,7 +1065,6 @@ def main():
                         csv_df = pd.DataFrame(all_sensitivity_results); csv_bytes = csv_df.to_csv(index=False).encode('utf-8')
                         st.download_button(label="📥 Download Full Sensitivity Results as CSV", data=csv_bytes, file_name="sensitivity_analysis_results.csv", mime="text/csv")
 
-
         with tabs[tab_keys.index("🗂️ Scenarios")]:
             # Scenario comparison logic (seems mostly self-contained)
             st.subheader("Scenario Management & Comparison")
@@ -1079,11 +1078,11 @@ def main():
                          inputs_copy = st.session_state["inputs"].copy(); results_copy = saved_result.copy()
                          from datetime import datetime # Local import if needed
                          st.session_state["saved_scenarios"][scenario_name] = {"inputs": inputs_copy, "results": results_copy, "description": scenario_desc, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-                         st.success(f"Saved scenario '{scenario_name}' with its results.")
-                     else: st.warning("No valid simulation results found to save.")
-                else: st.warning("Please enter a scenario name before saving.")
+                         st.success(f"Saved scenario '{scenario_name}'.")
+                     else: st.warning("No valid results to save.")
+                else: st.warning("Please enter a scenario name.")
             st.markdown("---"); st.markdown("### Saved Scenarios") # Display saved scenarios...
-            if not st.session_state.get("saved_scenarios"): st.info("No scenarios saved in this session yet.")
+            if not st.session_state.get("saved_scenarios"): st.info("No scenarios saved yet.")
             else:
                  sorted_scenario_keys = sorted(st.session_state["saved_scenarios"].keys())
                  for name in sorted_scenario_keys:
@@ -1092,15 +1091,15 @@ def main():
                          with st.expander(f"{name} — Saved: {details.get('timestamp', 'N/A')}"): # Expander logic...
                              st.caption(f"Notes: {details.get('description', '_No description provided._')}"); col1, col2, col3 = st.columns([1, 1, 2])
                              if col1.button("🔄 Load Inputs", key=f"load_{name}", help="Load inputs from this scenario into the sidebar."): # Load button...
-                                 st.session_state["inputs"] = details["inputs"].copy(); st.session_state["processed_results"] = None; st.success(f"Inputs from scenario '{name}' loaded. Adjust or press 'Run Simulation'."); time.sleep(1); st.rerun()
+                                 st.session_state["inputs"] = details["inputs"].copy(); st.session_state["processed_results"] = None; st.success(f"Inputs from '{name}' loaded."); time.sleep(1); st.rerun()
                              if col2.button("🗑️ Delete", key=f"delete_{name}", help="Delete this saved scenario."): # Delete button...
                                  del st.session_state["saved_scenarios"][name]; st.rerun()
                              new_name = col3.text_input(f"Rename '{name}' to:", value=name, key=f"rename_{name}", label_visibility="collapsed"); rename_button_key = f"rename_btn_{name}" # Rename logic...
                              if new_name != name and new_name.strip():
-                                 if new_name in st.session_state["saved_scenarios"]: col3.warning("Name already exists.")
+                                 if new_name in st.session_state["saved_scenarios"]: col3.warning("Name exists.")
                                  elif col3.button("✏️ Rename", key=rename_button_key): st.session_state["saved_scenarios"][new_name] = st.session_state["saved_scenarios"].pop(name); st.rerun()
             st.markdown("---"); st.markdown("### Compare Two Saved Scenarios") # Comparison logic...
-            if len(st.session_state.get("saved_scenarios", {})) < 2: st.info("Save at least two scenarios to enable comparison.")
+            if len(st.session_state.get("saved_scenarios", {})) < 2: st.info("Save at least two scenarios.")
             else: # Scenario comparison UI and logic...
                  scenario_keys = sorted(list(st.session_state["saved_scenarios"].keys())); col_a, col_b = st.columns(2)
                  scenario_a = col_a.selectbox("Select Scenario A", options=scenario_keys, index=0, key="comp_a")
@@ -1108,7 +1107,7 @@ def main():
                  if scenario_a == scenario_keys[default_b_index] and len(scenario_keys) > 1: default_b_index = 0
                  scenario_b = col_b.selectbox("Select Scenario B", options=scenario_keys, index=default_b_index, key="comp_b")
                  if scenario_a and scenario_b and scenario_a != scenario_b: # Comparison display logic...
-                      if scenario_a not in st.session_state["saved_scenarios"] or scenario_b not in st.session_state["saved_scenarios"]: st.warning("One selected scenario no longer exists.")
+                      if scenario_a not in st.session_state["saved_scenarios"] or scenario_b not in st.session_state["saved_scenarios"]: st.warning("Scenario not found.")
                       else: # Get data and display comparison tables/plots...
                           data_a = st.session_state["saved_scenarios"][scenario_a]; data_b = st.session_state["saved_scenarios"][scenario_b]; result_a = data_a.get("results", {}); result_b = data_b.get("results", {}); inputs_a = data_a.get("inputs", {}); inputs_b = data_b.get("inputs", {})
                           # ... (Keep comparison metric table logic) ...
@@ -1118,8 +1117,9 @@ def main():
                               try:
                                   for key in metric_key_path: val_a = val_a.get(key, {})
                                   for key in metric_key_path: val_b = val_b.get(key, {})
-                                  val_a = val_a if isinstance(val_a, (int, float, np.number)) else None; val_b = val_b if isinstance(val_b, (int, float, np.number)) else None
-                                  delta = None;
+                                  val_a = val_a if isinstance(val_a, (int, float, np.number)) else None
+                                  val_b = val_b if isinstance(val_b, (int, float, np.number)) else None
+                                  delta = None
                                   if val_a is not None and val_b is not None and np.isfinite(val_a) and np.isfinite(val_b): delta = val_b - val_a
                                   return val_a, val_b, delta
                               except Exception as e: logger.error(f"Error get_metric_delta {metric_key_path}: {e}"); return None, None, None
@@ -1178,24 +1178,56 @@ def main():
                           show_only_diff = st.checkbox("Show only differing assumptions", key="scenario_diff_check")
                           df_display_assumptions = df_compare_assumptions[df_compare_assumptions["IsDifferent"]].drop(columns=["IsDifferent"]) if show_only_diff else df_compare_assumptions.drop(columns=["IsDifferent"])
                           if not df_display_assumptions.empty: st.dataframe(df_display_assumptions, use_container_width=True)
-                          elif show_only_diff: st.info("No differing assumptions found between these scenarios.")
-                          # ... (Keep IRR comparison plot logic) ...
-                          st.markdown("#### Levered IRR Distributions"); irrs_a = result_a.get("finite_levered_irrs", []); irrs_b = result_b.get("finite_levered_irrs", [])
+                          elif show_only_diff: st.info("No differing assumptions found.")
+                          # ... (Updated IRR comparison plot logic) ...
+                          st.markdown("#### Levered IRR Distributions")
+                          irrs_a = result_a.get("finite_levered_irrs", [])
+                          irrs_b = result_b.get("finite_levered_irrs", [])
                           if not irrs_a and not irrs_b: st.warning("No valid Levered IRR data for comparison plot.")
                           else:
                               combined_irrs = [irr for irr in irrs_a if np.isfinite(irr)] + [irr for irr in irrs_b if np.isfinite(irr)]
                               if not combined_irrs: st.warning("No finite Levered IRR data found to plot.")
                               else:
-                                   global_min = np.min(combined_irrs) if combined_irrs else -0.1; global_max = np.max(combined_irrs) if combined_irrs else 0.5; padding = (global_max - global_min) * 0.05;
-                                   if np.isclose(global_max, global_min): padding = 0.05; x_start = global_min - padding; x_end = global_max + padding; num_bins = 30; bin_size = (x_end - x_start) / num_bins
-                                   fig_comp = make_subplots(rows=1, cols=2, shared_yaxes=True, subplot_titles=(scenario_a, scenario_b))
-                                   fig_comp.add_trace(go.Histogram(x=irrs_a, name=scenario_a, marker_color='rgba(55, 128, 191, 0.7)', xbins=dict(start=x_start, end=x_end, size=bin_size), showlegend=False), row=1, col=1)
-                                   fig_comp.add_trace(go.Histogram(x=irrs_b, name=scenario_b, marker_color='rgba(255, 127, 14, 0.7)', xbins=dict(start=x_start, end=x_end, size=bin_size), showlegend=False), row=1, col=2)
-                                   fig_comp.update_layout(title_text="Levered IRR Distributions (Side-by-Side)", height=400, template="plotly_white", bargap=0.1, margin=dict(t=50, b=10))
-                                   fig_comp.update_xaxes(tickformat=".1%", title_text="Levered IRR", row=1, col=1); fig_comp.update_xaxes(tickformat=".1%", title_text="Levered IRR", row=1, col=2); fig_comp.update_yaxes(title_text="Frequency", row=1, col=1)
-                                   st.plotly_chart(fig_comp, use_container_width=True)
+                                   global_min = np.min(combined_irrs); global_max = np.max(combined_irrs)
+                                   padding = (global_max - global_min) * 0.05
+                                   if np.isclose(global_max, global_min): padding = 0.05
+                                   x_start = global_min - padding
+                                   x_end = global_max + padding
+                                   num_bins = 30
+                                   bin_size = (x_end - x_start) / num_bins if not np.isclose(x_end, x_start) else 0.1
+                                   fig_comp = make_subplots(
+                                       rows=2, cols=1,
+                                       shared_xaxes=True, # Share the x-axis
+                                       vertical_spacing=0.05, # Reduce space between plots
+                                       subplot_titles=(f"Scenario: {scenario_a}", f"Scenario: {scenario_b}")
+                                   )
+                                   if bin_size > FLOAT_ATOL:
+                                       fig_comp.add_trace(go.Histogram(
+                                           x=irrs_a, name=scenario_a,
+                                           marker_color='rgba(55, 128, 191, 0.7)', # Blue
+                                           xbins=dict(start=x_start, end=x_end, size=bin_size),
+                                           showlegend=False),
+                                           row=1, col=1 # Position: Row 1, Col 1
+                                       )
+                                       fig_comp.add_trace(go.Histogram(
+                                           x=irrs_b, name=scenario_b,
+                                           marker_color='rgba(255, 127, 14, 0.7)', # Orange
+                                           xbins=dict(start=x_start, end=x_end, size=bin_size),
+                                           showlegend=False),
+                                           row=2, col=1 # Position: Row 2, Col 1
+                                       )
+                                       fig_comp.update_layout(
+                                           title_text="Levered IRR Distributions (Comparison)",
+                                           height=600, template="plotly_white", bargap=0.1,
+                                           margin=dict(t=60, b=10, l=10, r=10)
+                                       )
+                                       fig_comp.update_xaxes(tickformat=".1%", title_text="Levered IRR", row=2, col=1)
+                                       fig_comp.update_yaxes(title_text="Frequency", row=1, col=1)
+                                       fig_comp.update_yaxes(title_text="Frequency", row=2, col=1)
+                                       st.plotly_chart(fig_comp, use_container_width=True)
+                                   else:
+                                       st.warning("Cannot generate comparison histogram: IRR range too narrow.")
                  elif scenario_a == scenario_b: st.warning("Please select two different scenarios to compare.")
-
 
             with tabs[tab_keys.index("ℹ️ Guide")]:
                 st.markdown("""
