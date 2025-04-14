@@ -4,6 +4,12 @@ Main Streamlit application entry point for PropSaber.
 Orchestrates UI setup (sidebar, tabs), input handling,
 simulation execution, and visualization display by calling
 functions from the propsaber package modules.
+
+MODIFIED: Fixed NameError in Initial State Snapshot by creating
+          SimulationInputs object after input processing and using it.
+CORRECTED: Removed non-breaking space causing SyntaxError near main().
+CORRECTED: Used 'inputs_used_for_run' in snapshot display after results exist.
+MODIFIED: Removed Initial State Snapshot display when no results exist yet.
 """
 
 import streamlit as st
@@ -20,301 +26,195 @@ import plotly.graph_objects as go
 from typing import List, Dict, Any, Optional
 
 # --- Basic Configuration ---
-# Logging setup moved here from constants.py
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
-logger = logging.getLogger(__name__) # Get logger for this module (__main__)
+logger = logging.getLogger(__name__)
 
 # --- Project Module Imports ---
-# Use absolute imports based on the package structure
-# Imports need to happen *after* logging is configured if modules use logging
-from propsaber.core.inputs import SimulationInputs
-from propsaber.core.constants import (
-    FLOAT_ATOL, FLOAT_RTOL, DEFAULT_NUM_SIMULATIONS, DEFAULT_HOLD_PERIOD,
-    FORWARD_CURVE_PATH, # Use path defined in constants
-    LOAN_TYPE_IO # Import loan type constant
-)
-from propsaber.core.simulation import run_monte_carlo
-from propsaber.core.debt import calculate_debt_service # Needed for initial state snapshot
-# Corrected: Import get_valid_paths from utils
-from propsaber.core.utils import convert_to_internal, get_valid_paths
-
-from propsaber.ui.inputs import render_sidebar_inputs # Renders all sidebar widgets
-from propsaber.ui.visualizations import ( # Import plotting functions
-    plot_irr_distribution,
-    plot_rent_vs_normal,
-    plot_vacancy_distribution,
-    plot_terminal_growth_vs_exit_cap,
-    plot_simulated_sofr_distribution, # Add the SOFR plot function
-    plot_loan_balance_distribution # Import the new LTV/Loan Balance plot
-)
-from propsaber.data.forward_curve import load_forward_curve_and_std_dev, get_rate_for_year
-from propsaber.scenarios.scenario_manager import (
-    save_scenario, load_scenario, list_saved_scenarios, _ensure_scenario_dir_exists
-)
+try:
+    from propsaber.core.inputs import SimulationInputs
+    from propsaber.core.constants import (
+        FLOAT_ATOL, FLOAT_RTOL, DEFAULT_NUM_SIMULATIONS, DEFAULT_HOLD_PERIOD,
+        FORWARD_CURVE_PATH, LOAN_TYPE_IO, LOAN_TYPE_AMORT, MONTHS_PER_YEAR # Added missing constants
+    )
+    from propsaber.core.simulation import run_monte_carlo
+    # Import the CORRECTED calculate_debt_service
+    from propsaber.core.debt import calculate_debt_service
+    from propsaber.core.utils import convert_to_internal, get_valid_paths
+    from propsaber.ui.inputs import render_sidebar_inputs
+    from propsaber.ui.visualizations import (
+        plot_irr_distribution, plot_rent_vs_normal, plot_vacancy_distribution,
+        plot_terminal_growth_vs_exit_cap, plot_simulated_sofr_distribution,
+        plot_loan_balance_distribution
+    )
+    from propsaber.data.forward_curve import load_forward_curve_and_std_dev
+    from propsaber.scenarios.scenario_manager import (
+        save_scenario, load_scenario, list_saved_scenarios, _ensure_scenario_dir_exists
+    )
+except ImportError as e:
+    st.error(f"Failed to import PropSaber modules. Ensure the 'propsaber' package is structured correctly. Error: {e}")
+    st.stop() # Stop execution if core modules can't be imported
 
 
-# --- Page Configuration (Set at the very top) ---
+# --- Page Configuration ---
 st.set_page_config(
     page_title="PropSaber Simulation",
-    layout="wide", # Use wide layout for more space
-    initial_sidebar_state="expanded" # Keep sidebar open initially
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # --- Main Application Logic ---
 def main():
-    """
-    Main function to run the Streamlit application.
-    """
     st.title("🗡️ PropSaber: Multifamily Simulator")
     st.subheader("Sharper Projections Based on Real-World Uncertainty")
 
-    # --- Ensure Scenario Directory Exists ---
     _ensure_scenario_dir_exists()
 
-    # --- Load Static Data (Forward Curve) ---
-    # Use the function from the data module
-    # These will return empty dicts if loading fails, error is handled inside
-    forward_curve_data, std_dev_curve_data = load_forward_curve_and_std_dev(FORWARD_CURVE_PATH) # Pass path
-    data_loaded_ok = bool(forward_curve_data and std_dev_curve_data) # Check if data is present
+    # --- Load Static Data ---
+    forward_curve_data, std_dev_curve_data = load_forward_curve_and_std_dev(FORWARD_CURVE_PATH)
+    data_loaded_ok = bool(forward_curve_data and std_dev_curve_data)
 
     # --- Initialize Session State ---
     if "inputs" not in st.session_state:
         logger.info("Initializing st.session_state['inputs'] in app.py")
-        # Create a default instance to populate the initial state
         default_inputs_instance = SimulationInputs()
         st.session_state["inputs"] = default_inputs_instance.to_dict()
-
     if "processed_results" not in st.session_state:
         st.session_state["processed_results"] = None
     if "saved_scenarios" not in st.session_state:
-        st.session_state["saved_scenarios"] = {} # Initialize saved scenarios dict
+        st.session_state["saved_scenarios"] = {}
     if "confirming_delete" not in st.session_state:
-         st.session_state.confirming_delete = None # For scenario file deletion confirmation
+         st.session_state.confirming_delete = None
 
 
     # --- Sidebar ---
     with st.sidebar:
         run_sim_button = st.button("🚀 Run Simulation", key="run_sim_button", type="primary", use_container_width=True)
         st.markdown("---")
-
-        # Render sidebar inputs using the function from ui.inputs
-        # Pass the current state dictionary (or defaults if empty) and curve data
         render_sidebar_inputs(
-            initial_inputs=SimulationInputs(**st.session_state["inputs"]), # Pass a SimulationInputs object
+            initial_inputs=SimulationInputs(**st.session_state["inputs"]),
             forward_curve=forward_curve_data,
             std_dev_curve=std_dev_curve_data
             )
-
+        # (Scenario Save/Load/Delete logic remains the same)
         st.markdown("---")
         st.subheader("💾 Scenario Files")
-
-        # Save Current Inputs (using function from scenario_manager)
         save_name = st.text_input("New Scenario File Name", value="my_scenario", key="save_scenario_name_sidebar", help="Enter name to save CURRENT sidebar inputs to a file.")
         if st.button("Save Inputs to File", key="save_button_sidebar"):
-            if save_name:
-                # Save the *currently processed* inputs from session state
-                save_scenario(st.session_state["inputs"], filename=f"{save_name}.json")
-            else:
-                st.warning("Please enter a file name.")
-
+            if save_name: save_scenario(st.session_state["inputs"], filename=f"{save_name}.json")
+            else: st.warning("Please enter a file name.")
         st.markdown("---")
-
-        # Load/Delete Scenario Files (using functions from scenario_manager)
-        try:
-            scenario_files = list_saved_scenarios()
-        except Exception as e:
-            st.error(f"Error reading scenario directory: {e}")
-            scenario_files = []
-
+        try: scenario_files = list_saved_scenarios()
+        except Exception as e: st.error(f"Error reading scenario directory: {e}"); scenario_files = []
         if scenario_files:
             selected_file_load = st.selectbox("Load or Delete Scenario File", options=[""] + scenario_files, index=0, key="scenario_selector_load_sidebar", help="Select a file to load its inputs into the sidebar or delete it.")
-
-            if selected_file_load: # Check if a file is actually selected
+            if selected_file_load:
                 col_load, col_delete_init = st.columns(2)
                 with col_load:
                     if st.button("✅ Load Inputs", key=f"load_button_{selected_file_load}_sidebar"):
                         loaded_inputs_dict = load_scenario(filename=selected_file_load)
-                        if loaded_inputs_dict:
-                            # CRITICAL: Update session state with loaded inputs
-                            st.session_state["inputs"] = loaded_inputs_dict
-                            # Clear any previous run results as inputs have changed
-                            st.session_state["processed_results"] = None
-                            st.success(f"Loaded '{selected_file_load}'. Inputs updated. Press 'Run Simulation'.")
-                            time.sleep(1.5) # Give user time to read message
-                            st.rerun() # Rerun to reflect loaded inputs in widgets
-
+                        if loaded_inputs_dict: st.session_state["inputs"] = loaded_inputs_dict; st.session_state["processed_results"] = None; st.success(f"Loaded '{selected_file_load}'."); time.sleep(1.5); st.rerun()
                 with col_delete_init:
-                    # Use a unique key for the delete initiation button based on the file
-                    if st.button("🗑️ Delete File", key=f"delete_init_{selected_file_load}_sidebar"):
-                        st.session_state.confirming_delete = selected_file_load # Store file to confirm delete
-                        st.rerun() # Rerun to show confirmation options
-
-                # Confirmation Dialog (appears only if confirming_delete matches selected file)
+                    if st.button("🗑️ Delete File", key=f"delete_init_{selected_file_load}_sidebar"): st.session_state.confirming_delete = selected_file_load; st.rerun()
                 if st.session_state.get("confirming_delete") == selected_file_load:
-                    st.warning(f"Confirm delete: **{selected_file_load}**?")
-                    col_confirm, col_cancel = st.columns(2)
+                    st.warning(f"Confirm delete: **{selected_file_load}**?"); col_confirm, col_cancel = st.columns(2)
                     with col_confirm:
-                        # Unique key for confirmation button
                         if st.button("✔️ Yes, Delete", key=f"delete_confirm_{selected_file_load}_sidebar"):
-                            try:
-                                from propsaber.core.constants import SCENARIO_DIR # Import path constant
-                                (SCENARIO_DIR / selected_file_load).unlink() # Use pathlib for deletion
-                                st.success(f"Deleted: {selected_file_load}")
-                                st.session_state.confirming_delete = None # Clear confirmation state
-                                time.sleep(1) # Allow user to see success message
-                                st.rerun() # Rerun to refresh file list
-                            except Exception as e:
-                                st.error(f"Error deleting file: {e}")
-                                st.session_state.confirming_delete = None # Clear confirmation state on error
+                            try: from propsaber.core.constants import SCENARIO_DIR; (SCENARIO_DIR / selected_file_load).unlink(); st.success(f"Deleted: {selected_file_load}"); st.session_state.confirming_delete = None; time.sleep(1); st.rerun()
+                            except Exception as e: st.error(f"Error deleting file: {e}"); st.session_state.confirming_delete = None
                     with col_cancel:
-                         # Unique key for cancel button
-                        if st.button("❌ Cancel", key=f"delete_cancel_{selected_file_load}_sidebar"):
-                            st.session_state.confirming_delete = None # Clear confirmation state
-                            st.rerun() # Rerun to hide confirmation options
-        else:
-            st.info("No saved scenario files found.")
+                        if st.button("❌ Cancel", key=f"delete_cancel_{selected_file_load}_sidebar"): st.session_state.confirming_delete = None; st.rerun()
+        else: st.info("No saved scenario files found.")
 
 
     # --- Input Processing & Validation ---
-    # This section aggregates the raw UI state into the st.session_state['inputs'] dictionary
-    # It should happen *after* the sidebar rendering and *before* the simulation run button logic
     processed_inputs_dict = {}
-    inputs_valid = True # Flag to track if all inputs are valid
-    default_inputs_instance = SimulationInputs() # Instance to get defaults
-
-    # Define keys requiring special handling or conversion
-    percentage_decimal_keys = {
-        "market_rent_deviation_pct", "transition_normal_to_recession", "transition_recession_to_normal",
-        "current_vacancy", "stabilized_vacancy", "vacancy_volatility", "loan_to_cost", "interest_rate",
-        "transaction_cost_pct", "risk_free_rate", "hurdle_rate", "sofr_spread", "sofr_floor",
-        "initial_loan_costs_pct", "refi_new_ltv", "refi_costs_pct_loan" # Added new percentage inputs
-       }
-    percentage_direct_keys = {
-         "normal_growth_mean", "normal_growth_vol", "recession_growth_mean", "recession_growth_vol",
-         "mean_other_income_growth", "other_income_stddev", "mean_expense_growth", "expense_stddev",
-         "mean_capex_growth", "capex_stddev", "mean_exit_cap_rate", "exit_cap_rate_stddev",
-         "refi_fixed_rate_spread_to_sofr" # Added new percentage input
-    }
-    # Get all expected input keys from the dataclass definition
+    inputs_valid_for_processing = True
+    default_inputs_instance = SimulationInputs()
+    percentage_decimal_keys = {"market_rent_deviation_pct", "transition_normal_to_recession", "transition_recession_to_normal", "current_vacancy", "stabilized_vacancy", "vacancy_volatility", "loan_to_cost", "interest_rate", "transaction_cost_pct", "risk_free_rate", "hurdle_rate", "sofr_spread", "sofr_floor", "initial_loan_costs_pct", "refi_new_ltv", "refi_costs_pct_loan"}
+    percentage_direct_keys = {"normal_growth_mean", "normal_growth_vol", "recession_growth_mean", "recession_growth_vol", "mean_other_income_growth", "other_income_stddev", "mean_expense_growth", "expense_stddev", "mean_capex_growth", "capex_stddev", "mean_exit_cap_rate", "exit_cap_rate_stddev", "refi_fixed_rate_spread_to_sofr"}
     all_input_keys = {k for k in SimulationInputs.__annotations__ if not k.startswith('_') and not isinstance(getattr(SimulationInputs, k, None), property)}
-
-    # Process each key
-    for key in all_input_keys:
-        widget_key = f"input_{key}"
-        default_value = getattr(default_inputs_instance, key, None)
-        default_type = type(default_value) if default_value is not None else None
-
-        # Get value from widget state, fall back to existing session state, then default
+    for key in all_input_keys: # Process inputs from widgets/state
+        widget_key = f"input_{key}"; default_value = getattr(default_inputs_instance, key, None); default_type = type(default_value) if default_value is not None else None
         ui_value = st.session_state.get(widget_key, st.session_state.get("inputs", {}).get(key, default_value))
-
-        # Handle special cases derived from other inputs
-        if key == 'is_variable_rate':
-            rate_type_widget_value = st.session_state.get("input_rate_type", "Fixed")
-            processed_inputs_dict[key] = (rate_type_widget_value == "Floating")
-            continue # Skip further processing for this key
+        if key == 'is_variable_rate': processed_inputs_dict[key] = (st.session_state.get("input_rate_type", "Fixed") == "Floating"); continue
         if key == 'loan_type':
-            # Determine based on rate type (fixed allows choice, float forces IO)
-            is_float = processed_inputs_dict.get('is_variable_rate', False) # Use already processed value
-            if is_float:
-                 processed_inputs_dict[key] = LOAN_TYPE_IO
-            else:
-                 # Use the value from the selectbox if it exists, else default
-                 processed_inputs_dict[key] = st.session_state.get("input_loan_type", default_inputs_instance.loan_type)
-            continue # Skip further processing
-
-        # Ensure ui_value is not None before attempting conversion
-        if ui_value is None:
-             processed_inputs_dict[key] = default_value # Use default if UI value is None
-             continue
-
-        # Convert UI value to internal format
-        try:
-            if key in percentage_decimal_keys:
-                # UI shows %, convert to decimal for internal use
-                processed_inputs_dict[key] = convert_to_internal(ui_value, True)
-            elif key in percentage_direct_keys:
-                # UI shows %, store directly as float for internal use
-                processed_inputs_dict[key] = convert_to_internal(ui_value, False)
-            elif default_type == int:
-                # Ensure integer inputs are rounded correctly
-                processed_inputs_dict[key] = int(round(float(ui_value)))
-            elif default_type == float:
-                processed_inputs_dict[key] = float(ui_value)
+            if processed_inputs_dict.get('is_variable_rate', False): processed_inputs_dict[key] = LOAN_TYPE_IO
+            else: processed_inputs_dict[key] = st.session_state.get("input_loan_type", default_inputs_instance.loan_type)
+            continue
+        if ui_value is None: processed_inputs_dict[key] = default_value; continue
+        try: # Convert to internal types
+            if key in percentage_decimal_keys: processed_inputs_dict[key] = convert_to_internal(ui_value, True)
+            elif key in percentage_direct_keys: processed_inputs_dict[key] = convert_to_internal(ui_value, False)
+            elif default_type == int: processed_inputs_dict[key] = int(round(float(ui_value)))
+            elif default_type == float: processed_inputs_dict[key] = float(ui_value)
             elif default_type == bool:
-                 # Handle boolean from checkbox or loaded JSON string
-                 if isinstance(ui_value, str):
-                      processed_inputs_dict[key] = ui_value.lower() == 'true'
-                 else:
-                      processed_inputs_dict[key] = bool(ui_value)
-            else: # Includes string types like loan_type (handled above) or others
-                 processed_inputs_dict[key] = ui_value # Store as-is
-
-        except Exception as e:
-             logger.error(f"Error processing input key '{key}' with UI value '{ui_value}' (Type: {type(ui_value)}): {e}")
-             # Fallback to default value on error
-             processed_inputs_dict[key] = default_value
-             inputs_valid = False # Mark inputs as potentially invalid
-
-    # --- Update session state if changes detected ---
-    # Compare newly processed dict with the one currently in session state
-    current_session_inputs_dict = st.session_state.get("inputs", {})
-    # Use a tolerance-based comparison for floats
-    if not all(
-        np.isclose(processed_inputs_dict.get(k, np.nan), current_session_inputs_dict.get(k, np.nan), rtol=FLOAT_RTOL, atol=FLOAT_ATOL, equal_nan=True)
-        if isinstance(processed_inputs_dict.get(k), float) else processed_inputs_dict.get(k) == current_session_inputs_dict.get(k)
-        for k in all_input_keys
-    ):
+                 if isinstance(ui_value, str): processed_inputs_dict[key] = ui_value.lower() == 'true'
+                 else: processed_inputs_dict[key] = bool(ui_value)
+            else: processed_inputs_dict[key] = ui_value
+        except Exception as e: logger.error(f"Error processing input key '{key}': {e}"); processed_inputs_dict[key] = default_value; inputs_valid_for_processing = False
+    current_session_inputs_dict = st.session_state.get("inputs", {}) # Update session state if needed
+    if not all(np.isclose(processed_inputs_dict.get(k, np.nan), current_session_inputs_dict.get(k, np.nan), rtol=FLOAT_RTOL, atol=FLOAT_ATOL, equal_nan=True) if isinstance(processed_inputs_dict.get(k), float) else processed_inputs_dict.get(k) == current_session_inputs_dict.get(k) for k in all_input_keys):
          logger.info("Processed inputs differ from session state. Updating st.session_state['inputs'].")
-         st.session_state["inputs"] = processed_inputs_dict.copy() # Update with the processed values
-         # Optionally clear results when inputs change significantly
-         # st.session_state["processed_results"] = None
-         # st.rerun() # Consider if rerun is needed immediately on input change
+         st.session_state["inputs"] = processed_inputs_dict.copy()
+
+
+    # --- Create SimulationInputs Object ---
+    sim_inputs_obj: Optional[SimulationInputs] = None
+    inputs_valid_for_snapshot = False # Renamed flag for clarity
+    try:
+        sim_inputs_obj = SimulationInputs(**st.session_state["inputs"])
+        inputs_valid_for_snapshot = True # Mark as valid if object creation succeeds
+        logger.info("Successfully created SimulationInputs object from session state.")
+    except Exception as e:
+        st.error(f"Input Configuration Error: {e}. Please check sidebar inputs.")
+        logger.error(f"Failed to create SimulationInputs object from session state: {e}", exc_info=True)
+        # inputs_valid_for_snapshot remains False
 
 
     # --- Simulation Execution ---
     processed_results = st.session_state.get("processed_results")
 
-# Within the simulation execution logic
     if run_sim_button:
         logger.info("Run Simulation button clicked.")
         st.session_state["processed_results"] = None
         processed_results = None
 
-        inputs_to_run_dict = st.session_state["inputs"]
-        try:
-            sim_inputs = SimulationInputs(**inputs_to_run_dict)
-            num_sims_run = sim_inputs.num_simulations
-            inputs_valid = True
-        except Exception as e:
-            st.error(f"Input Configuration Error: {e}. Please check sidebar inputs.")
-            logger.error(f"Failed to create SimulationInputs object: {e}", exc_info=True)
-            inputs_valid = False
+        # Use the sim_inputs_obj created earlier, check if it's valid
+        if sim_inputs_obj and inputs_valid_for_snapshot:
+            sim_inputs_to_run = sim_inputs_obj
+            num_sims_run = sim_inputs_to_run.num_simulations
+            inputs_valid_for_sim = True
+            logger.info("Using pre-validated SimulationInputs object for simulation run.")
+        else:
+            # Use the flag set during object creation attempt
+            if not inputs_valid_for_snapshot:
+                 st.error("Cannot run simulation due to input configuration errors identified earlier.")
+            else: # Should not happen if logic above is correct, but as safety
+                 st.error("Cannot run simulation: Input object not available.")
+            logger.error("Simulation run aborted because SimulationInputs object creation failed or object unavailable.")
+            inputs_valid_for_sim = False
 
         if not data_loaded_ok:
             st.error("Cannot run simulation: Forward curve data failed to load.")
-            inputs_valid = False
+            inputs_valid_for_sim = False
 
-        if inputs_valid:
+        if inputs_valid_for_sim:
             with st.spinner(f"Running {num_sims_run} simulations..."):
                 mc_results = run_monte_carlo(
-                    inputs=sim_inputs,
+                    inputs=sim_inputs_to_run,
                     num_simulations=num_sims_run,
                     forward_curve=forward_curve_data,
                     std_dev_curve=std_dev_curve_data
                 )
-
             if mc_results is None or 'error' in mc_results:
-                error_message = mc_results.get('error', 'Unknown simulation error.') if mc_results else 'Critical error in simulation execution.'
-                st.error(f"Simulation Error: {error_message}")
-                logger.error(f"Simulation execution failed: {error_message}")
+                error_message = mc_results.get('error', 'Unknown simulation error.') if mc_results else 'Critical error.'
+                st.error(f"Simulation Error: {error_message}"); logger.error(f"Sim execution failed: {error_message}")
                 st.session_state["processed_results"] = None
             else:
-                st.session_state["processed_results"] = mc_results
-                logger.info("Simulation finished successfully.")
+                st.session_state["processed_results"] = mc_results; logger.info("Simulation finished successfully.")
             st.rerun()
         else:
             st.warning("Simulation not run due to input errors or missing data.")
-
 
 
     # --- Display Results ---
@@ -323,9 +223,22 @@ def main():
     if processed_results and "error" in processed_results:
         st.error(f"Simulation Error: {processed_results['error']}")
     elif processed_results is None:
+        # --- Display initial message BEFORE results exist ---
+        # <<< CHANGE START >>>
+        # Removed the Initial State Snapshot display from here
         st.info("Adjust inputs in the sidebar and click 'Run Simulation' to see results.")
-    elif processed_results:
-        # Unpack results safely using .get()
+        # <<< CHANGE END >>>
+
+    elif processed_results: # Simulation HAS run, display full results
+        try:
+             inputs_used_for_run = SimulationInputs(**st.session_state['inputs'])
+             inputs_valid_for_display = True
+        except Exception as e:
+             st.error(f"Error recreating inputs object for display: {e}")
+             inputs_valid_for_display = False
+             inputs_used_for_run = None
+
+        # Unpack results
         metrics = processed_results.get("metrics", {})
         risk_metrics = processed_results.get("risk_metrics", {})
         plot_data = processed_results.get("plot_data", {})
@@ -336,68 +249,67 @@ def main():
         finite_exit_values = processed_results.get("finite_exit_values", [])
         finite_exit_caps = processed_results.get("finite_exit_caps", [])
         sim_results_completed_audit = processed_results.get("raw_results_for_audit", [])
-        # Use inputs from session state that were used for the run
-        inputs_used_for_run = SimulationInputs(**st.session_state['inputs'])
 
         # Define tabs
         tab_keys = ["📊 Summary", "📈 IRR", "💰 Pro-Forma", "📉 Dynamics", "🛡️ Risk", "🔍 Audit", "🚪 Exit", "🔎 Sensitivity", "🗂️ Scenarios", "ℹ️ Guide"]
         tabs = st.tabs(tab_keys)
 
-        # --- Populate Tabs (using functions from visualization module) ---
+        # --- Populate Tabs ---
         with tabs[tab_keys.index("📊 Summary")]:
             st.subheader("Key Performance Indicators (KPIs)")
             col_kp1, col_kp2, col_kp3 = st.columns(3)
             mean_l_irr = metrics.get("mean_levered_irr", np.nan); median_l_irr = metrics.get("median_levered_irr", np.nan); p05_l_irr = metrics.get("p05_levered_irr", np.nan)
             col_kp1.metric("Mean Levered IRR", f"{mean_l_irr:.1%}" if np.isfinite(mean_l_irr) else "N/A"); col_kp1.metric("Median Levered IRR", f"{median_l_irr:.1%}" if np.isfinite(median_l_irr) else "N/A"); col_kp1.metric("5th Pctl Levered IRR (VaR 95%)", f"{p05_l_irr:.1%}" if np.isfinite(p05_l_irr) else "N/A")
             mean_exit_val = metrics.get("mean_exit_value", np.nan); mean_exit_cap = metrics.get("mean_exit_cap", np.nan)
-            col_kp2.metric("Mean Net Exit Value", f"${mean_exit_val:,.0f}" if np.isfinite(mean_exit_val) else "N/A"); col_kp2.metric("Mean Exit Cap Rate", f"{mean_exit_cap*100:.2f}%" if np.isfinite(mean_exit_cap) else "N/A") # Display as %
-            prob_loss = risk_metrics.get("Prob. Loss (IRR < 0%)", np.nan); prob_hurdle = risk_metrics.get("Prob. Below Hurdle", np.nan); hurdle_rate_disp = inputs_used_for_run.hurdle_rate
+            col_kp2.metric("Mean Net Exit Value", f"${mean_exit_val:,.0f}" if np.isfinite(mean_exit_val) else "N/A"); col_kp2.metric("Mean Exit Cap Rate", f"{mean_exit_cap*100:.2f}%" if np.isfinite(mean_exit_cap) else "N/A")
+            prob_loss = risk_metrics.get("Prob. Loss (IRR < 0%)", np.nan); prob_hurdle = risk_metrics.get("Prob. Below Hurdle", np.nan)
+            hurdle_rate_disp = getattr(inputs_used_for_run, 'hurdle_rate', np.nan) if inputs_used_for_run else np.nan
             hurdle_label = f"Prob < {hurdle_rate_disp:.0%} Hurdle" if np.isfinite(hurdle_rate_disp) else "Prob < Hurdle"
             col_kp3.metric("Prob. Loss (IRR < 0%)", f"{prob_loss:.1%}" if np.isfinite(prob_loss) else "N/A"); col_kp3.metric(hurdle_label, f"{prob_hurdle:.1%}" if np.isfinite(prob_hurdle) else "N/A"); sharpe = risk_metrics.get("Sharpe Ratio", np.nan); col_kp3.metric("Sharpe Ratio", f"{sharpe:.2f}" if np.isfinite(sharpe) else "N/A")
-            st.markdown("---"); st.subheader("Year 0 / Initial State Snapshot")
-            try: # Initial state snapshot calculation...
-                # Use the inputs_used_for_run instance
-                potential_gross_rent = inputs_used_for_run.num_units * inputs_used_for_run.base_rent * 12
-                vacancy_amount = potential_gross_rent * inputs_used_for_run.current_vacancy
-                effective_gross_rent = potential_gross_rent - vacancy_amount
-                other_income_val = inputs_used_for_run.mean_other_income
-                effective_gross_income = effective_gross_rent + other_income_val
-                op_ex = inputs_used_for_run.mean_expense
-                # Use the NOI property for consistency
-                net_operating_income = inputs_used_for_run.initial_noi
-                initial_cap_rate = net_operating_income / inputs_used_for_run.purchase_price if inputs_used_for_run.purchase_price > FLOAT_ATOL else np.nan
-                capex_yr1 = inputs_used_for_run.initial_capex
-                unlevered_cf_yr1_approx = net_operating_income - capex_yr1
-                loan_amount_val = inputs_used_for_run.loan_amount # Use property
-                # --- CORRECTED CALL TO calculate_debt_service ---
-                interest_yr1, principal_yr1, _, effective_rate_yr1, _ = calculate_debt_service(
-                    current_loan_type=inputs_used_for_run.loan_type, # Use current_... names
-                    current_loan_amount=loan_amount_val,
-                    current_interest_rate=inputs_used_for_run.interest_rate,
-                    current_loan_term_yrs=inputs_used_for_run.loan_term_yrs,
-                    current_is_variable_rate=inputs_used_for_run.is_variable_rate,
-                    current_balance=loan_amount_val, # Starting balance = loan amount
-                    year=1,
-                    sofr_spread=inputs_used_for_run.sofr_spread,
-                    forward_curve=forward_curve_data, # Pass loaded data
-                    std_dev_curve=std_dev_curve_data, # Pass loaded data
-                    sofr_floor=inputs_used_for_run.sofr_floor,
-                    rate_persistence_phi=inputs_used_for_run.rate_persistence_phi,
-                    volatility_scalar=inputs_used_for_run.volatility_scalar,
-                    prev_volatile_sofr_comp=None # No previous component for Year 1
-                )
-                # --- END OF CORRECTION ---
-                if not np.isfinite(interest_yr1): interest_yr1 = 0;
-                if not np.isfinite(principal_yr1): principal_yr1 = 0
-                total_debt_service_yr1 = interest_yr1 + principal_yr1
-                levered_cf_yr1_approx = unlevered_cf_yr1_approx - total_debt_service_yr1
-                initial_equity = inputs_used_for_run.initial_equity # Use property which includes costs
-                levered_cash_yield = levered_cf_yr1_approx / initial_equity if initial_equity > FLOAT_ATOL else np.nan
-                col_is1, col_is2 = st.columns(2) # Display initial state...
-                with col_is1: st.metric("Purchase Price", f"${inputs_used_for_run.purchase_price:,.0f}"); st.metric("Potential Gross Rent (PGR)", f"${potential_gross_rent:,.0f}"); st.metric(f"Less: Vacancy ({inputs_used_for_run.current_vacancy:.1%})", f"(${vacancy_amount:,.0f})"); st.metric("Effective Gross Rent (EGR)", f"${effective_gross_rent:,.0f}"); st.metric("Plus: Other Income", f"${other_income_val:,.0f}"); st.metric("Effective Gross Income (EGI)", f"${effective_gross_income:,.0f}"); st.metric("Less: Operating Expenses", f"(${op_ex:,.0f})"); st.metric("Net Operating Income (NOI)", f"${net_operating_income:,.0f}"); st.metric("Initial Going-In Cap Rate", f"{initial_cap_rate:.2%}" if np.isfinite(initial_cap_rate) else "N/A")
-                with col_is2: st.metric("Less: CapEx (Yr 1 Est.)", f"(${capex_yr1:,.0f})"); st.metric("Unlevered CF (Yr 1 Est.)", f"${unlevered_cf_yr1_approx:,.0f}"); st.markdown("---"); st.metric(f"Loan Amount ({inputs_used_for_run.loan_to_cost:.0%})", f"${loan_amount_val:,.0f}"); st.metric("Initial Equity", f"${initial_equity:,.0f}"); st.metric(f"Interest Rate (Yr 1)", f"{effective_rate_yr1:.2%}" if np.isfinite(effective_rate_yr1) else "N/A"); st.metric("Less: Debt Service (Yr 1 Est.)", f"(${total_debt_service_yr1:,.0f})"); st.metric("Levered CF (Yr 1 Est.)", f"${levered_cf_yr1_approx:,.0f}"); st.metric("Levered Cash Yield (Yr 1 Est.)", f"{levered_cash_yield:.1%}" if np.isfinite(levered_cash_yield) else "N/A")
-            except Exception as e: st.error(f"Error calculating Initial State Snapshot: {e}"); logger.error(f"Initial State Calc Error: {e}", exc_info=True)
 
+            # Display Initial State Snapshot (AFTER results exist)
+            st.markdown("---"); st.subheader("Year 0 / Initial State Snapshot (Based on Run Inputs)")
+            if inputs_used_for_run and inputs_valid_for_display:
+                try:
+                    # Calculate initial monthly payment based on inputs used for the run
+                    initial_monthly_payment_snapshot = 0.0
+                    if not inputs_used_for_run.is_variable_rate and inputs_used_for_run.loan_type == LOAN_TYPE_AMORT:
+                         rate_m = inputs_used_for_run.interest_rate / MONTHS_PER_YEAR; periods = inputs_used_for_run.loan_term_yrs * MONTHS_PER_YEAR; loan_amt = inputs_used_for_run.loan_amount
+                         if periods > 0 and loan_amt > FLOAT_ATOL:
+                              if abs(rate_m) > FLOAT_ATOL:
+                                  try: initial_monthly_payment_snapshot = npf.pmt(rate_m, periods, -loan_amt)
+                                  except Exception: initial_monthly_payment_snapshot = 0.0
+                              else: initial_monthly_payment_snapshot = loan_amt / periods
+                         if not np.isfinite(initial_monthly_payment_snapshot): initial_monthly_payment_snapshot = 0.0
+
+                    potential_gross_rent = inputs_used_for_run.num_units * inputs_used_for_run.base_rent * 12
+                    vacancy_amount = potential_gross_rent * inputs_used_for_run.current_vacancy; effective_gross_rent = potential_gross_rent - vacancy_amount
+                    other_income_val = inputs_used_for_run.mean_other_income; effective_gross_income = effective_gross_rent + other_income_val
+                    op_ex = inputs_used_for_run.mean_expense; net_operating_income = inputs_used_for_run.initial_noi
+                    initial_cap_rate = net_operating_income / inputs_used_for_run.purchase_price if inputs_used_for_run.purchase_price > FLOAT_ATOL else np.nan
+                    capex_yr1 = inputs_used_for_run.initial_capex; unlevered_cf_yr1_approx = net_operating_income - capex_yr1
+                    loan_amount_val = inputs_used_for_run.loan_amount
+
+                    interest_yr1, principal_yr1, _, effective_rate_yr1, _ = calculate_debt_service(
+                        current_loan_type=inputs_used_for_run.loan_type, current_interest_rate=inputs_used_for_run.interest_rate,
+                        current_is_variable_rate=inputs_used_for_run.is_variable_rate, current_balance=loan_amount_val,
+                        monthly_payment=initial_monthly_payment_snapshot, year=1, sofr_spread=inputs_used_for_run.sofr_spread,
+                        forward_curve=forward_curve_data, std_dev_curve=std_dev_curve_data, sofr_floor=inputs_used_for_run.sofr_floor,
+                        rate_persistence_phi=inputs_used_for_run.rate_persistence_phi, volatility_scalar=inputs_used_for_run.volatility_scalar,
+                        prev_volatile_sofr_comp=None
+                    )
+                    if not np.isfinite(interest_yr1): interest_yr1 = 0.0;
+                    if not np.isfinite(principal_yr1): principal_yr1 = 0.0
+                    total_debt_service_yr1 = interest_yr1 + principal_yr1; levered_cf_yr1_approx = unlevered_cf_yr1_approx - total_debt_service_yr1
+                    initial_equity = inputs_used_for_run.initial_equity; levered_cash_yield = levered_cf_yr1_approx / initial_equity if initial_equity > FLOAT_ATOL else np.nan
+
+                    col_is1, col_is2 = st.columns(2)
+                    with col_is1: st.metric("Purchase Price", f"${inputs_used_for_run.purchase_price:,.0f}"); st.metric("Potential Gross Rent (PGR)", f"${potential_gross_rent:,.0f}"); st.metric(f"Less: Vacancy ({inputs_used_for_run.current_vacancy:.1%})", f"(${vacancy_amount:,.0f})"); st.metric("Effective Gross Rent (EGR)", f"${effective_gross_rent:,.0f}"); st.metric("Plus: Other Income", f"${other_income_val:,.0f}"); st.metric("Effective Gross Income (EGI)", f"${effective_gross_income:,.0f}"); st.metric("Less: Operating Expenses", f"(${op_ex:,.0f})"); st.metric("Net Operating Income (NOI)", f"${net_operating_income:,.0f}"); st.metric("Initial Going-In Cap Rate", f"{initial_cap_rate:.2%}" if np.isfinite(initial_cap_rate) else "N/A")
+                    with col_is2: st.metric("Less: CapEx (Yr 1 Est.)", f"(${capex_yr1:,.0f})"); st.metric("Unlevered CF (Yr 1 Est.)", f"${unlevered_cf_yr1_approx:,.0f}"); st.markdown("---"); st.metric(f"Loan Amount ({inputs_used_for_run.loan_to_cost:.0%})", f"${loan_amount_val:,.0f}"); st.metric("Initial Equity", f"${initial_equity:,.0f}"); st.metric(f"Interest Rate (Yr 1)", f"{effective_rate_yr1:.2%}" if np.isfinite(effective_rate_yr1) else "N/A"); st.metric("Less: Debt Service (Yr 1 Est.)", f"(${total_debt_service_yr1:,.0f})"); st.metric("Levered CF (Yr 1 Est.)", f"${levered_cf_yr1_approx:,.0f}"); st.metric("Levered Cash Yield (Yr 1 Est.)", f"{levered_cash_yield:.1%}" if np.isfinite(levered_cash_yield) else "N/A")
+                except Exception as e:
+                    st.error(f"Error calculating Initial State Snapshot: {e}"); logger.error(f"Initial State Calc Error after run: {e}", exc_info=True)
+            else:
+                 st.warning("Cannot display Initial State Snapshot as input object could not be recreated.")
         # --- Other Tabs (IRR, Pro-Forma, Dynamics, Risk, Audit, Exit, Sensitivity, Scenarios, Guide) ---
         with tabs[tab_keys.index("📈 IRR")]:
              st.subheader("IRR Distribution Analysis")
