@@ -778,16 +778,9 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
     plot_data["vacancy_plot_df"] = vacancy_plot_df
     scatter_plot_data = {"term_rent_growth_pct": [], "exit_cap_rate_pct": []}
     for r in sim_results_completed:
-        term_rent = r.get("terminal_yr_rent_growth_pct")
-        exit_cap = r.get("sim_exit_cap_rate")
-        if term_rent is not None and exit_cap is not None:
-            term_rent_safe = term_rent if np.isfinite(term_rent) else inputs.normal_growth_mean
-            exit_cap_safe = exit_cap if np.isfinite(exit_cap) else inputs.mean_exit_cap_rate / 100.0
-            scatter_plot_data["term_rent_growth_pct"].append(term_rent_safe)
-            scatter_plot_data["exit_cap_rate_pct"].append(exit_cap_safe * 100.0)
-        else:
-            logger.warning(f"Missing values in sim: term_rent_growth_pct={term_rent}, sim_exit_cap_rate={exit_cap}")
-    logger.info(f"Scatter plot data: term_rent_growth_pct={scatter_plot_data['term_rent_growth_pct']}, exit_cap_rate_pct={scatter_plot_data['exit_cap_rate_pct']}")
+        if r.get("terminal_yr_rent_growth_pct") is not None and r.get("sim_exit_cap_rate") is not None and np.isfinite(r["terminal_yr_rent_growth_pct"]) and np.isfinite(r["sim_exit_cap_rate"]):
+            scatter_plot_data["term_rent_growth_pct"].append(r["terminal_yr_rent_growth_pct"])
+            scatter_plot_data["exit_cap_rate_pct"].append(r["sim_exit_cap_rate"] * 100.0)
     plot_data["scatter_plot"] = scatter_plot_data
     avg_data = {}
     avg_data_keys = [
