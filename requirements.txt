@@ -1,7 +1,7 @@
-streamlit==1.22.0
-numpy==1.24.3
-pandas==2.0.1
-plotly==5.14.1
-joblib==1.2.0
-numpy-financial==1.0.0
-statsmodels==0.14.1
+streamlit
+numpy
+pandas
+plotly
+joblib
+numpy-financial
+statsmodels
