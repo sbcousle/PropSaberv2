@@ -185,11 +185,23 @@ def main():
 
 
     # --- Update session state only if necessary ---
-    current_session_inputs_dict = st.session_state.get("inputs", {})
-    if not all(np.isclose(processed_inputs_dict.get(k, np.nan), current_session_inputs_dict.get(k, np.nan), rtol=FLOAT_RTOL, atol=FLOAT_ATOL, equal_nan=True) if isinstance(processed_inputs_dict.get(k), float) else processed_inputs_dict.get(k) == current_session_inputs_dict.get(k) for k in all_input_keys):
-         logger.info("Processed inputs differ from session state. Updating st.session_state['inputs'].")
-         st.session_state["inputs"] = processed_inputs_dict.copy()
 
+    current_session_inputs_dict = st.session_state.get("inputs", {})
+    changed_keys = []
+    for k in all_input_keys:
+        proc_val = processed_inputs_dict.get(k)
+        curr_val = current_session_inputs_dict.get(k)
+        if isinstance(proc_val, float) and isinstance(curr_val, float):
+            if not np.isclose(proc_val, curr_val, rtol=FLOAT_RTOL, atol=FLOAT_ATOL, equal_nan=True):
+                changed_keys.append((k, proc_val, curr_val))
+        elif proc_val != curr_val:  # Direct comparison for non-floats
+            changed_keys.append((k, proc_val, curr_val))
+
+    if changed_keys:
+        logger.info("Processed inputs differ from session state. Updating st.session_state['inputs'].")
+        for k, pval, cval in changed_keys:
+            logger.debug(f"Input changed: {k} from {cval} to {pval}")
+        st.session_state["inputs"] = processed_inputs_dict.copy()
 
     # --- Create SimulationInputs Object ---
     sim_inputs_obj: Optional[SimulationInputs] = None
