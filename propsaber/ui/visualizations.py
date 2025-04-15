@@ -282,195 +282,188 @@ def plot_terminal_growth_vs_exit_cap(scatter_data: Dict[str, List[float]]) -> go
 
 # --- Simulated SOFR Distribution Plot ---
 @simulation_error_handler
+# In propsaber/ui/visualizations.py
+
+@simulation_error_handler
 def plot_simulated_sofr_distribution(
     years_list: List[int],
     underlying_sofr_paths: List[List[float]], # List of paths (each path is a list of rates for years_list)
-    forward_rates_input: List[float] # List of forward curve rates corresponding to years_list
+    forward_rates_input: List[float], # List of forward curve rates corresponding to years_list
+    refi_year: Optional[int] = None # <<< ADDED: Optional refinance year argument
 ) -> go.Figure:
     """
     Plots the distribution of the simulated underlying SOFR rate (before spread)
-    against the input forward curve.
+    against the input forward curve. Optionally adds a vertical line for the refi year.
 
     Args:
         years_list: List of simulation years.
-        underlying_sofr_paths: List of lists, where each inner list is a simulated
-                               SOFR path (rate per year, before spread) for one run.
+        underlying_sofr_paths: List of lists, where each inner list is a simulated SOFR path.
         forward_rates_input: List of the input forward curve rates for the simulation years.
+        refi_year: Optional integer indicating the year of refinance.
 
     Returns:
         A Plotly Figure object. Returns an empty figure if data is insufficient.
     """
-    fig = go.Figure()
+    fig = go.Figure() # Initialize figure at the start
 
+    # Basic data validation
     if not underlying_sofr_paths or not years_list or len(underlying_sofr_paths[0]) != len(years_list):
         logger.warning("Insufficient or mismatched data for plotting SOFR distribution.")
         fig.update_layout(title="Simulated SOFR Distribution (No Data)", xaxis_title="Year", yaxis_title="Simulated Base SOFR Rate")
         return fig
 
     try:
-        # Convert paths to NumPy array for percentile calculations
-        sofr_array = np.array(underlying_sofr_paths) # Shape: (n_simulations, n_years)
-
-        # Calculate percentiles across simulations for each year
+        # --- Data Preparation ---
+        sofr_array = np.array(underlying_sofr_paths)
         p5 = np.percentile(sofr_array, 5, axis=0)
         median = np.percentile(sofr_array, 50, axis=0)
         p95 = np.percentile(sofr_array, 95, axis=0)
 
-        # Add the 5th-95th percentile band for simulated rates
+        # --- Add Traces ---
+        # 5th-95th percentile band
         fig.add_trace(go.Scatter(
-            x=years_list + years_list[::-1], # x values for band (forward then reverse)
-            y=list(p95) + list(p5[::-1]),   # y values for band (upper then reverse lower)
-            fill='toself',
-            fillcolor='rgba(0,100,80,0.2)', # Semi-transparent fill color
-            line=dict(color='rgba(255,255,255,0)'), # No border line for the band itself
-            hoverinfo='skip', # Don't show hover info for the band shape
-            showlegend=True,
-            name='Simulated Base SOFR Rate (5th-95th Pctl)'
+            x=years_list + years_list[::-1], y=list(p95) + list(p5[::-1]),
+            fill='toself', fillcolor='rgba(0,100,80,0.2)', line=dict(color='rgba(255,255,255,0)'),
+            hoverinfo='skip', showlegend=True, name='Simulated Base SOFR Rate (5th-95th Pctl)'
         ))
-
-        # Add the median simulated line
+        # Median simulated line
         fig.add_trace(go.Scatter(
-            x=years_list,
-            y=median,
-            line=dict(color='rgb(0,100,80)', width=2.5), # Darker line for median
-            mode='lines',
-            name='Median Simulated Base SOFR Rate'
+            x=years_list, y=median, line=dict(color='rgb(0,100,80)', width=2.5),
+            mode='lines', name='Median Simulated Base SOFR Rate'
         ))
-
-        # Add the input forward curve line for reference
+        # Input forward curve line
         if forward_rates_input and len(forward_rates_input) == len(years_list) and any(np.isfinite(fr) for fr in forward_rates_input):
             fig.add_trace(go.Scatter(
-                x=years_list,
-                y=forward_rates_input,
-                mode='lines',
-                line=dict(color='grey', dash='dot', width=2), # Dotted grey line for reference
-                name='Forward SOFR Curve (Input)'
+                x=years_list, y=forward_rates_input, mode='lines',
+                line=dict(color='grey', dash='dot', width=2), name='Forward SOFR Curve (Input)'
             ))
 
-        # Update layout
+        # --- <<< ADDED: Add Vertical Line for Refinance Year >>> ---
+        if refi_year is not None and refi_year in years_list:
+            fig.add_vline(
+                x=refi_year,
+                line_width=1.5,
+                line_dash="dash",
+                line_color="grey", # Using same style as the LTV plot marker
+                annotation_text=f"Refi Yr {refi_year}",
+                annotation_position="top right",
+                annotation_font_size=10,
+                annotation_font_color="grey"
+            )
+        # --- <<< END ADDED BLOCK >>> ---
+
+        # --- Update Layout ---
         fig.update_layout(
             title="Simulated Underlying SOFR Rate Distribution (Excl. Spread)",
-            xaxis_title="Year",
-            yaxis_title="Underlying Simulated Base SOFR Rate",
-            template="plotly_white",
-            hovermode="x unified", # Show tooltips for all traces at a given x
+            xaxis_title="Year", yaxis_title="Underlying Simulated Base SOFR Rate",
+            template="plotly_white", hovermode="x unified",
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
-            yaxis_tickformat=".1%" # Format y-axis as percentage with one decimal
+            yaxis_tickformat=".1%"
         )
         return fig
 
     except Exception as e:
         logger.error(f"Error creating simulated SOFR distribution plot: {e}", exc_info=True)
-        # Return an empty figure with error title on failure
-        fig = go.Figure()
         fig.update_layout(title="Simulated SOFR Distribution (Plotting Error)", xaxis_title="Year", yaxis_title="Simulated Base SOFR Rate")
-        return fig
+        return fig # Return the figure object even on error, but with error title
 
-# In propsaber/ui/visualizations.py
 @simulation_error_handler
 def plot_loan_balance_distribution(
     years: List[int],
     loan_balance_paths: List[List[float]],
-    ltv_paths: List[List[float]]
+    ltv_paths: List[List[float]],
+    refi_year: Optional[int] = None # <<< ADDED: Optional refinance year argument
 ) -> go.Figure:
     """
     Plots the distribution of loan balances and LTV ratios over time.
+    Optionally adds a vertical line indicating the refinance year.
 
     Args:
         years: List of simulation years.
-        loan_balance_paths: List of lists, where each inner list is a loan balance path
-                           (balance per year) for one simulation.
-        ltv_paths: List of lists, where each inner list is an LTV ratio path
-                   (ratio per year) for one simulation.
+        loan_balance_paths: List of lists, where each inner list is a loan balance path.
+        ltv_paths: List of lists, where each inner list is an LTV ratio path.
+        refi_year: Optional integer indicating the year of refinance.
 
     Returns:
         A Plotly Figure object. Returns an empty figure if data is insufficient.
     """
-    fig = go.Figure()
+    fig = go.Figure() # Initialize figure at the start
 
+    # Basic data validation
     if not years or not loan_balance_paths or not ltv_paths or len(loan_balance_paths[0]) != len(years):
         logger.warning("Insufficient or mismatched data for plotting loan balance/LTV.")
         fig.update_layout(
             title="Loan Balance and LTV Distribution (No Data)",
-            xaxis_title="Year",
-            yaxis_title="Loan Balance ($)"
+            xaxis_title="Year", yaxis_title="Loan Balance ($)"
         )
         return fig
 
     try:
-        # Convert paths to NumPy arrays for calculations
-        loan_balance_array = np.array(loan_balance_paths)  # Shape: (n_simulations, n_years)
-        ltv_array = np.array(ltv_paths)                    # Shape: (n_simulations, n_years)
-
-        # Calculate statistics for loan balance
+        # --- Data Preparation ---
+        loan_balance_array = np.array(loan_balance_paths)
+        ltv_array = np.array(ltv_paths)
         balance_median = np.median(loan_balance_array, axis=0)
         balance_p5 = np.percentile(loan_balance_array, 5, axis=0)
         balance_p95 = np.percentile(loan_balance_array, 95, axis=0)
-
-        # Calculate statistics for LTV
         ltv_median = np.median(ltv_array, axis=0)
         ltv_p5 = np.percentile(ltv_array, 5, axis=0)
         ltv_p95 = np.percentile(ltv_array, 95, axis=0)
 
-        # Create subplot with secondary y-axis
+        # --- Create Subplot with Secondary Y-axis ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-        # Add loan balance traces (primary y-axis)
+        # --- Add Loan Balance Traces (Primary Y-axis) ---
         fig.add_trace(
             go.Scatter(
-                x=years + years[::-1],
-                y=list(balance_p95) + list(balance_p5[::-1]),
-                fill='toself',
-                fillcolor='rgba(0,100,80,0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                hoverinfo='skip',
-                name='Loan Balance (5th-95th Pctl)',
-                showlegend=True
+                x=years + years[::-1], y=list(balance_p95) + list(balance_p5[::-1]),
+                fill='toself', fillcolor='rgba(0,100,80,0.2)', line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo='skip', name='Loan Balance (5th-95th Pctl)', showlegend=True
             ),
             secondary_y=False
         )
         fig.add_trace(
             go.Scatter(
-                x=years,
-                y=balance_median,
-                line=dict(color='rgb(0,100,80)', width=2.5),
-                name='Median Loan Balance',
-                mode='lines'
+                x=years, y=balance_median, line=dict(color='rgb(0,100,80)', width=2.5),
+                name='Median Loan Balance', mode='lines'
             ),
             secondary_y=False
         )
 
-        # Add LTV traces (secondary y-axis)
+        # --- Add LTV Traces (Secondary Y-axis) ---
         fig.add_trace(
             go.Scatter(
-                x=years + years[::-1],
-                y=list(ltv_p95) + list(ltv_p5[::-1]),  # Fixed: Changed 'ltv P95' to 'ltv_p95'
-                fill='toself',
-                fillcolor='rgba(255,165,0,0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                hoverinfo='skip',
-                name='LTV Ratio (5th-95th Pctl)',
-                showlegend=True
+                x=years + years[::-1], y=list(ltv_p95) + list(ltv_p5[::-1]),
+                fill='toself', fillcolor='rgba(255,165,0,0.2)', line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo='skip', name='LTV Ratio (5th-95th Pctl)', showlegend=True
             ),
             secondary_y=True
         )
         fig.add_trace(
             go.Scatter(
-                x=years,
-                y=ltv_median,
-                line=dict(color='rgb(255,165,0)', width=2.5),
-                name='Median LTV Ratio',
-                mode='lines'
+                x=years, y=ltv_median, line=dict(color='rgb(255,165,0)', width=2.5),
+                name='Median LTV Ratio', mode='lines'
             ),
             secondary_y=True
         )
 
-        # Update layout
+        # --- <<< ADDED: Add Vertical Line for Refinance Year >>> ---
+        if refi_year is not None and refi_year in years:
+            fig.add_vline(
+                x=refi_year,
+                line_width=1.5,
+                line_dash="dash",
+                line_color="grey",
+                annotation_text=f"Refi Yr {refi_year}",
+                annotation_position="top right", # Position annotation
+                annotation_font_size=10,
+                annotation_font_color="grey"
+            )
+        # --- <<< END ADDED BLOCK >>> ---
+
+        # --- Update Layout ---
         fig.update_layout(
             title="Loan Balance and LTV Ratio Over Time",
-            xaxis_title="Year",
-            template="plotly_white",
-            hovermode="x unified",
+            xaxis_title="Year", template="plotly_white", hovermode="x unified",
             legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01)
         )
         fig.update_yaxes(title_text="Loan Balance ($)", secondary_y=False, tickprefix="$", tickformat=",.0f")
@@ -480,10 +473,9 @@ def plot_loan_balance_distribution(
 
     except Exception as e:
         logger.error(f"Error creating loan balance/LTV plot: {e}", exc_info=True)
-        fig = go.Figure()
+        # Return the fig object initialized earlier, but update title to show error
         fig.update_layout(
             title="Loan Balance and LTV Distribution (Plotting Error)",
-            xaxis_title="Year",
-            yaxis_title="Loan Balance ($)"
+            xaxis_title="Year", yaxis_title="Loan Balance ($)"
         )
-        return fig
+        return fig # Return the figure object even on error, but with error title
