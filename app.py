@@ -297,6 +297,7 @@ def main():
         # --- Populate Tabs ---
         with tabs[tab_keys.index("📊 Summary")]:
             st.subheader("Key Performance Indicators (KPIs)")
+            # --- KPI Metrics Display ---
             col_kp1, col_kp2, col_kp3 = st.columns(3)
             mean_l_irr = metrics.get("mean_levered_irr", np.nan); median_l_irr = metrics.get("median_levered_irr", np.nan); p05_l_irr = metrics.get("p05_levered_irr", np.nan)
             col_kp1.metric("Mean Levered IRR", f"{mean_l_irr:.1%}" if np.isfinite(mean_l_irr) else "N/A"); col_kp1.metric("Median Levered IRR", f"{median_l_irr:.1%}" if np.isfinite(median_l_irr) else "N/A"); col_kp1.metric("5th Pctl Levered IRR (VaR 95%)", f"{p05_l_irr:.1%}" if np.isfinite(p05_l_irr) else "N/A")
@@ -307,58 +308,119 @@ def main():
             hurdle_label = f"Prob < {hurdle_rate_disp:.0%} Hurdle" if np.isfinite(hurdle_rate_disp) else "Prob < Hurdle"
             col_kp3.metric("Prob. Loss (IRR < 0%)", f"{prob_loss:.1%}" if np.isfinite(prob_loss) else "N/A"); col_kp3.metric(hurdle_label, f"{prob_hurdle:.1%}" if np.isfinite(prob_hurdle) else "N/A"); sharpe = risk_metrics.get("Sharpe Ratio", np.nan); col_kp3.metric("Sharpe Ratio", f"{sharpe:.2f}" if np.isfinite(sharpe) else "N/A")
 
-            # Display Initial State Snapshot (AFTER results exist)
+        # --- Initial State Snapshot Section ---
             st.markdown("---"); st.subheader("Year 0 / Initial State Snapshot (Based on Run Inputs)")
             if inputs_used_for_run and inputs_valid_for_display:
                 try:
-                    # Calculate initial monthly payment based on inputs used for the run
-                    initial_monthly_payment_snapshot = 0.0
-                    if not inputs_used_for_run.is_variable_rate and inputs_used_for_run.loan_type == LOAN_TYPE_AMORT:
-                         rate_m = inputs_used_for_run.interest_rate / MONTHS_PER_YEAR; periods = inputs_used_for_run.loan_term_yrs * MONTHS_PER_YEAR; loan_amt = inputs_used_for_run.loan_amount
-                         if periods > 0 and loan_amt > FLOAT_ATOL:
-                              if abs(rate_m) > FLOAT_ATOL:
-                                  try: initial_monthly_payment_snapshot = npf.pmt(rate_m, periods, -loan_amt)
-                                  except Exception: initial_monthly_payment_snapshot = 0.0
-                              else: initial_monthly_payment_snapshot = loan_amt / periods
-                         if not np.isfinite(initial_monthly_payment_snapshot): initial_monthly_payment_snapshot = 0.0
+                    # --- Calculate values needed for snapshot ---
+                    # (Calculations remain the same as before)
+                    purchase_price = inputs_used_for_run.purchase_price
+                    loan_to_cost = inputs_used_for_run.loan_to_cost
+                    initial_loan_proceeds = purchase_price * loan_to_cost # Gross
+                    initial_loan_costs = initial_loan_proceeds * inputs_used_for_run.initial_loan_costs_pct
+                    net_initial_loan_proceeds = initial_loan_proceeds - initial_loan_costs # Net
+                    initial_equity = purchase_price - net_initial_loan_proceeds
 
                     potential_gross_rent = inputs_used_for_run.num_units * inputs_used_for_run.base_rent * 12
-                    vacancy_amount = potential_gross_rent * inputs_used_for_run.current_vacancy; effective_gross_rent = potential_gross_rent - vacancy_amount
-                    other_income_val = inputs_used_for_run.mean_other_income; effective_gross_income = effective_gross_rent + other_income_val
-                    op_ex = inputs_used_for_run.mean_expense; net_operating_income = inputs_used_for_run.initial_noi
-                    initial_cap_rate = net_operating_income / inputs_used_for_run.purchase_price if inputs_used_for_run.purchase_price > FLOAT_ATOL else np.nan
-                    capex_yr1 = inputs_used_for_run.initial_capex; unlevered_cf_yr1_approx = net_operating_income - capex_yr1
-                    loan_amount_val = inputs_used_for_run.loan_amount
+                    vacancy_amount = potential_gross_rent * inputs_used_for_run.current_vacancy
+                    effective_gross_rent = potential_gross_rent - vacancy_amount
+                    other_income_val = inputs_used_for_run.mean_other_income
+                    effective_gross_income = effective_gross_rent + other_income_val
+                    op_ex = inputs_used_for_run.mean_expense
+                    net_operating_income = inputs_used_for_run.initial_noi
+                    initial_cap_rate = net_operating_income / purchase_price if purchase_price > FLOAT_ATOL else np.nan
+                    capex_yr1 = inputs_used_for_run.initial_capex
 
-                    # --- <<< CORRECTED CALL >>> ---
+                    # Calculate Yr 1 Debt Service components
+                    # (Keep debt service calculation logic as is)
+                    initial_monthly_payment_snapshot = 0.0
+                    if not inputs_used_for_run.is_variable_rate and inputs_used_for_run.loan_type == LOAN_TYPE_AMORT:
+                        rate_m = inputs_used_for_run.interest_rate / MONTHS_PER_YEAR; periods = inputs_used_for_run.loan_term_yrs * MONTHS_PER_YEAR; loan_amt = inputs_used_for_run.loan_amount
+                        if periods > 0 and loan_amt > FLOAT_ATOL:
+                            if abs(rate_m) > FLOAT_ATOL:
+                                try: initial_monthly_payment_snapshot = npf.pmt(rate_m, periods, -loan_amt)
+                                except Exception: initial_monthly_payment_snapshot = 0.0
+                            else: initial_monthly_payment_snapshot = loan_amt / periods
+                        if not np.isfinite(initial_monthly_payment_snapshot): initial_monthly_payment_snapshot = 0.0
+
                     interest_yr1, principal_yr1, _, effective_rate_yr1, _ = calculate_debt_service(
-                        current_loan_type=inputs_used_for_run.loan_type,
-                        current_interest_rate=inputs_used_for_run.interest_rate,
-                        current_is_variable_rate=inputs_used_for_run.is_variable_rate,
-                        current_balance=loan_amount_val,
-                        monthly_payment=initial_monthly_payment_snapshot, # Pass calculated payment
-                        year=1,
-                        # Pass remaining args required by debt.py's function signature
-                        sofr_spread=inputs_used_for_run.sofr_spread,
-                        forward_curve=forward_curve_data,
-                        std_dev_curve=std_dev_curve_data,
-                        sofr_floor=inputs_used_for_run.sofr_floor,
-                        rate_persistence_phi=inputs_used_for_run.rate_persistence_phi,
-                        volatility_scalar=inputs_used_for_run.volatility_scalar,
+                        current_loan_type=inputs_used_for_run.loan_type, current_interest_rate=inputs_used_for_run.interest_rate,
+                        current_is_variable_rate=inputs_used_for_run.is_variable_rate, current_balance=inputs_used_for_run.loan_amount,
+                        monthly_payment=initial_monthly_payment_snapshot, year=1, sofr_spread=inputs_used_for_run.sofr_spread,
+                        forward_curve=forward_curve_data, std_dev_curve=std_dev_curve_data, sofr_floor=inputs_used_for_run.sofr_floor,
+                        rate_persistence_phi=inputs_used_for_run.rate_persistence_phi, volatility_scalar=inputs_used_for_run.volatility_scalar,
                         prev_volatile_sofr_comp=None
-                        # Removed incorrect/unnecessary args: current_loan_amount, current_loan_term_yrs
                     )
-                    # --- <<< END CORRECTED CALL >>> ---
+                    interest_yr1 = interest_yr1 if np.isfinite(interest_yr1) else 0.0; principal_yr1 = principal_yr1 if np.isfinite(principal_yr1) else 0.0
+                    total_debt_service_yr1 = interest_yr1 + principal_yr1
 
-                    if not np.isfinite(interest_yr1): interest_yr1 = 0.0;
-                    if not np.isfinite(principal_yr1): principal_yr1 = 0.0
-                    total_debt_service_yr1 = interest_yr1 + principal_yr1; levered_cf_yr1_approx = unlevered_cf_yr1_approx - total_debt_service_yr1
-                    initial_equity = inputs_used_for_run.initial_equity; levered_cash_yield = levered_cf_yr1_approx / initial_equity if initial_equity > FLOAT_ATOL else np.nan
+                    # Calculate Final Cash Flows for Yr 1 Estimate
+                    cfbds_yr1_approx = net_operating_income - capex_yr1
+                    levered_cf_yr1_approx = cfbds_yr1_approx - total_debt_service_yr1
+                    levered_cash_yield = levered_cf_yr1_approx / initial_equity if initial_equity > FLOAT_ATOL else np.nan
 
-                    col_is1, col_is2 = st.columns(2)
-                    # (Display metrics code remains the same)
-                    with col_is1: st.metric("Purchase Price", f"${inputs_used_for_run.purchase_price:,.0f}"); st.metric("Potential Gross Rent (PGR)", f"${potential_gross_rent:,.0f}"); st.metric(f"Less: Vacancy ({inputs_used_for_run.current_vacancy:.1%})", f"(${vacancy_amount:,.0f})"); st.metric("Effective Gross Rent (EGR)", f"${effective_gross_rent:,.0f}"); st.metric("Plus: Other Income", f"${other_income_val:,.0f}"); st.metric("Effective Gross Income (EGI)", f"${effective_gross_income:,.0f}"); st.metric("Less: Operating Expenses", f"(${op_ex:,.0f})"); st.metric("Net Operating Income (NOI)", f"${net_operating_income:,.0f}"); st.metric("Initial Going-In Cap Rate", f"{initial_cap_rate:.2%}" if np.isfinite(initial_cap_rate) else "N/A")
-                    with col_is2: st.metric("Less: CapEx (Yr 1 Est.)", f"(${capex_yr1:,.0f})"); st.metric("Unlevered CF (Yr 1 Est.)", f"${unlevered_cf_yr1_approx:,.0f}"); st.markdown("---"); st.metric(f"Loan Amount ({inputs_used_for_run.loan_to_cost:.0%})", f"${loan_amount_val:,.0f}"); st.metric("Initial Equity", f"${initial_equity:,.0f}"); st.metric(f"Interest Rate (Yr 1)", f"{effective_rate_yr1:.2%}" if np.isfinite(effective_rate_yr1) else "N/A"); st.metric("Less: Debt Service (Yr 1 Est.)", f"(${total_debt_service_yr1:,.0f})"); st.metric("Levered CF (Yr 1 Est.)", f"${levered_cf_yr1_approx:,.0f}"); st.metric("Levered Cash Yield (Yr 1 Est.)", f"{levered_cash_yield:.1%}" if np.isfinite(levered_cash_yield) else "N/A")
+                    # --- Display Key Metrics and Waterfall Charts ---
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    col_m1.metric("Purchase Price", f"${purchase_price:,.0f}")
+                    col_m2.metric(f"Loan Amount ({loan_to_cost:.0%})", f"${initial_loan_proceeds:,.0f}")
+                    col_m3.metric("Est. Initial Equity", f"${initial_equity:,.0f}")
+
+                    col_w1, col_w2 = st.columns(2)
+
+                    # --- Waterfall Chart 1: Initial Equity ---
+                    with col_w1:
+                        # REMOVED: st.markdown("###### Initial Equity Breakdown")
+                        fig_equity = go.Figure(go.Waterfall(
+                            name="Equity", orientation="v", measure=["absolute", "relative", "total"],
+                            x=["Purchase Price", "Net Loan Proceeds", "Initial Equity"],
+                            y=[purchase_price, -net_initial_loan_proceeds, initial_equity],
+                            connector={"line": {"color": "rgb(63, 63, 63)"}},
+                            increasing = {"marker":{"color":"rgba(50, 171, 96, 0.7)"}},
+                            decreasing = {"marker":{"color":"rgba(255, 127, 14, 0.7)"}},
+                            totals = {"marker":{"color":"rgba(55, 128, 191, 0.7)"}}
+                        ))
+                        # <<< MODIFIED: Added Plotly title, adjusted margins/height >>>
+                        fig_equity.update_layout(
+                            title=dict(text='Initial Equity Breakdown', x=0.5, xanchor='center', font=dict(size=14)), # Centered title
+                            waterfallgap=0.2,
+                            height=320, # Slightly increased height
+                            margin=dict(t=40, b=10, l=10, r=10) # Increased top margin
+                        )
+                        fig_equity.update_yaxes(tickprefix="$", tickformat=",.0f")
+                        # REMOVED: fig_equity.update_xaxes(tickangle=45) # Keeping horizontal labels
+                        st.plotly_chart(fig_equity, use_container_width=True)
+
+                    # --- Waterfall Chart 2: Estimated Year 1 Levered CF ---
+                    with col_w2:
+                        # REMOVED: st.markdown("###### Est. Year 1 Levered Cash Flow")
+                        fig_cf = go.Figure(go.Waterfall(
+                            name="CF Yr1", orientation="v",
+                            measure=["absolute", "relative", "relative", "relative", "total"],
+                            x=["EGI", "OpEx", "CapEx", "Debt Service", "Levered CF"],
+                            y=[effective_gross_income, -op_ex, -capex_yr1, -total_debt_service_yr1, levered_cf_yr1_approx],
+                            connector={"line": {"color": "rgb(63, 63, 63)"}},
+                            increasing = {"marker":{"color":"rgba(50, 171, 96, 0.7)"}},
+                            decreasing = {"marker":{"color":"rgba(255, 127, 14, 0.7)"}},
+                            totals = {"marker":{"color":"rgba(55, 128, 191, 0.7)"}}
+                        ))
+                        # <<< MODIFIED: Added Plotly title, adjusted margins/height >>>
+                        fig_cf.update_layout(
+                            title=dict(text='Est. Year 1 Levered Cash Flow', x=0.5, xanchor='center', font=dict(size=14)), # Centered title
+                            waterfallgap=0.2,
+                            height=320, # Slightly increased height
+                            margin=dict(t=40, b=10, l=10, r=10) # Increased top margin
+                        )
+                        fig_cf.update_yaxes(tickprefix="$", tickformat=",.0f")
+                        # REMOVED: fig_cf.update_xaxes(tickangle=45) # Keeping horizontal labels
+                        st.plotly_chart(fig_cf, use_container_width=True)
+
+                    # --- Additional Key Metrics ---
+                    st.markdown("---") # Separator
+                    col_m4, col_m5, col_m6 = st.columns(3)
+                    col_m4.metric("Est. Net Operating Income (NOI)", f"${net_operating_income:,.0f}")
+                    col_m5.metric("Initial Going-In Cap Rate", f"{initial_cap_rate:.2%}" if np.isfinite(initial_cap_rate) else "N/A")
+                    col_m6.metric("Est. Levered Cash Yield (Yr 1)", f"{levered_cash_yield:.1%}" if np.isfinite(levered_cash_yield) else "N/A")
+
                 except Exception as e:
                     st.error(f"Error calculating Initial State Snapshot: {e}"); logger.error(f"Initial State Calc Error after run: {e}", exc_info=True)
             else:
@@ -368,35 +430,56 @@ def main():
         # --- Other Tabs (IRR, Pro-Forma, Dynamics, Risk, Audit, Exit, Sensitivity, Scenarios, Guide) ---
         with tabs[tab_keys.index("📈 IRR")]:
              st.subheader("IRR Distribution Analysis")
+             # --- Metrics Display ---
              mean_unlevered_irr = metrics.get("mean_unlevered_irr", np.nan); median_unlevered_irr = metrics.get("median_unlevered_irr", np.nan); p05_unlevered_irr = metrics.get("p05_unlevered_irr", np.nan); p95_unlevered_irr = metrics.get("p95_unlevered_irr", np.nan); mean_l_irr = metrics.get("mean_levered_irr", np.nan); median_l_irr = metrics.get("median_levered_irr", np.nan); p05_l_irr = metrics.get("p05_levered_irr", np.nan); p95_l_irr = metrics.get("p95_levered_irr", np.nan)
              col1, col2, col3, col4 = st.columns(4); col1.metric("Mean Unlevered IRR", f"{mean_unlevered_irr:.1%}" if np.isfinite(mean_unlevered_irr) else "N/A"); col2.metric("Median Unlevered IRR", f"{median_unlevered_irr:.1%}" if np.isfinite(median_unlevered_irr) else "N/A"); col3.metric("5th Pctl Unlevered IRR", f"{p05_unlevered_irr:.1%}" if np.isfinite(p05_unlevered_irr) else "N/A"); col4.metric("95th Pctl Unlevered IRR", f"{p95_unlevered_irr:.1%}" if np.isfinite(p95_unlevered_irr) else "N/A")
              col5, col6, col7, col8 = st.columns(4); col5.metric("Mean Levered IRR", f"{mean_l_irr:.1%}" if np.isfinite(mean_l_irr) else "N/A"); col6.metric("Median Levered IRR", f"{median_l_irr:.1%}" if np.isfinite(median_l_irr) else "N/A"); col7.metric("5th Pctl Levered IRR", f"{p05_l_irr:.1%}" if np.isfinite(p05_l_irr) else "N/A"); col8.metric("95th Pctl Levered IRR", f"{p95_l_irr:.1%}" if np.isfinite(p95_l_irr) else "N/A")
-             st.markdown("---"); st.subheader("IRR Distributions"); unlev_failures = processed_results.get("unlev_forced_failures", 0); unlev_title = f"Distribution of Unlevered IRRs ({len(finite_unlevered)} valid runs)";
-             if unlev_failures > 0: unlev_title += f" — {unlev_failures} failures"
-             if finite_unlevered: fig_unlevered = plot_irr_distribution(irr_values=finite_unlevered, title=unlev_title, mean_irr=mean_unlevered_irr, median_irr=median_unlevered_irr, p05_irr=p05_unlevered_irr, p95_irr=p95_unlevered_irr, color='blue', percent_format=True); st.plotly_chart(fig_unlevered, use_container_width=True)
-             else: st.warning('Unlevered IRR data not available.')
-             st.markdown("---"); lev_failures = processed_results.get("lev_forced_failures", 0); lev_title = f"Distribution of Levered IRRs ({len(finite_levered)} valid runs)";
-             if lev_failures > 0: lev_title += f" — {lev_failures} failures"
-             if finite_levered: # Levered IRR plots...
-                 st.markdown("#### Levered IRR Distribution (Full View)"); fig_levered_full = plot_irr_distribution(irr_values=finite_levered, title=lev_title, mean_irr=mean_l_irr, median_irr=median_l_irr, p05_irr=p05_l_irr, p95_irr=p95_l_irr, color='orange', percent_format=True); st.plotly_chart(fig_levered_full, use_container_width=True)
+             st.markdown("---"); st.subheader("IRR Distributions"); unlev_failures = processed_results.get("unlev_forced_failures", 0);
+
+             # --- Unlevered IRR Plot ---
+             unlev_title = f"Distribution of Unlevered IRRs ({len(finite_unlevered)} valid runs)";
+             if unlev_failures > 0: unlev_title += f" — {unlev_failures} calculation failures" # Clarified failure message
+             if finite_unlevered:
+                 fig_unlevered = plot_irr_distribution(irr_values=finite_unlevered, title=unlev_title, mean_irr=mean_unlevered_irr, median_irr=median_unlevered_irr, p05_irr=p05_unlevered_irr, p95_irr=p95_unlevered_irr, color='cornflowerblue', percent_format=True); # Changed color slightly
+                 st.plotly_chart(fig_unlevered, use_container_width=True)
+                 # <<< NEW CONTEXT >>>
+                 st.caption("This chart shows the distribution of potential returns based purely on property operations and sale, before considering debt. The spread reflects uncertainty from market factors (rent, vacancy, exit cap) and operating assumptions.")
+             else:
+                 st.warning('Unlevered IRR data not available.')
+
+             st.markdown("---"); lev_failures = processed_results.get("lev_forced_failures", 0);
+
+             # --- Levered IRR Plot (Full) ---
+             lev_title = f"Distribution of Levered IRRs ({len(finite_levered)} valid runs)";
+             if lev_failures > 0: lev_title += f" — {lev_failures} calculation failures" # Clarified failure message
+             if finite_levered:
+                 st.markdown("#### Levered IRR Distribution (Full View)");
+                 fig_levered_full = plot_irr_distribution(irr_values=finite_levered, title=lev_title, mean_irr=mean_l_irr, median_irr=median_l_irr, p05_irr=p05_l_irr, p95_irr=p95_l_irr, color='darkorange', percent_format=True); # Changed color slightly
+                 st.plotly_chart(fig_levered_full, use_container_width=True)
+                 # <<< NEW CONTEXT >>>
+                 st.caption("This distribution includes the impact of financing (initial loan, debt service, refinancing, payoff). Leverage typically widens the distribution, increasing potential upside and downside compared to the Unlevered IRR. Compare the Mean and Median to gauge skewness.")
+
+                 # --- Levered IRR Plot (Zoomed) ---
                  st.markdown("---"); st.markdown("#### Zoomed-In View of Levered IRRs"); x_range_zoom = None; zoom_title = "Zoomed View: Levered IRRs (Error Calculating Range)"
-                 try: # Zoom logic...
+                 try:
                      if len(finite_levered) >= 2:
                          low_bound = np.percentile(finite_levered, 1)
                          high_bound = np.percentile(finite_levered, 99)
-                         zoom_min = max(-0.25, low_bound - 0.05)
-                         zoom_max = min(0.75, high_bound + 0.05)
-                         if zoom_max > zoom_min + 0.01:
+                         # Adjust zoom logic slightly to prevent overly narrow ranges
+                         spread = high_bound - low_bound
+                         zoom_min = max(-0.50, low_bound - spread * 0.1) # Ensure zoom doesn't go too negative
+                         zoom_max = min(1.00, high_bound + spread * 0.1) # Ensure zoom doesn't go too positive
+                         if zoom_max > zoom_min + 0.01: # Ensure range is meaningful
                              x_range_zoom = (zoom_min, zoom_max)
                              zoom_title = f"Zoomed View: Levered IRRs ({x_range_zoom[0]:.0%} to {x_range_zoom[1]:.0%})"
-                         else: # Inner else
-                             st.caption("Zoomed IRR plot skipped: Range too narrow.")
-                     # *** CORRECTED INDENTATION FOR THIS ELSE ***
-                     else: # Outer else (for len < 2)
-                         st.caption("Zoomed IRR plot skipped: Not enough data.")
-                     # *** END OF CORRECTION ***
+                         else:
+                             st.caption("Zoomed IRR plot skipped: Range too narrow after calculating percentiles.")
+                             x_range_zoom = None # Ensure it's None if skipped
+                     else:
+                         st.caption("Zoomed IRR plot skipped: Not enough data points.")
+                         x_range_zoom = None # Ensure it's None if skipped
 
-                     # Plotting logic (still inside try block)
+                     # Plotting logic (only if x_range_zoom is valid)
                      if x_range_zoom:
                          fig_levered_zoom = plot_irr_distribution(
                              irr_values=finite_levered, title=zoom_title,
@@ -405,14 +488,23 @@ def main():
                              color='coral', percent_format=True, x_range=x_range_zoom, bins=30
                          )
                          st.plotly_chart(fig_levered_zoom, use_container_width=True)
-                 except Exception as e: # <<< The except block for the try >>>
+                         # <<< NEW CONTEXT >>>
+                         st.caption("This zoomed view focuses on the central part of the Levered IRR distribution, excluding extreme outliers, to better visualize the most likely range of outcomes.")
+
+                 except Exception as e:
                      logger.error(f"Error creating zoomed IRR plot: {e}")
                      st.caption(f"Could not generate zoomed IRR plot: {e}")
-             else: st.warning('Levered IRR data not available.')
+                     # Optionally display the full plot again or nothing
+             else:
+                 st.warning('Levered IRR data not available.')
 
 
         with tabs[tab_keys.index("💰 Pro-Forma")]:
             st.subheader("Average Annual Pro-Forma Cash Flows")
+            st.info(
+                "This table displays the **average** cash flows across all completed simulation runs for each year of the hold period, "
+                "plus Year 0 setup and the final sale year. It provides a central tendency view of the potential financial performance."
+            )
             hold_period_actual = inputs_used_for_run.hold_period
 
             if not avg_cash_flow_data or not avg_cash_flow_data.get("noi") or len(avg_cash_flow_data["noi"]) != hold_period_actual or any(pd.isna(x) for x in avg_cash_flow_data["noi"]):
@@ -608,6 +700,7 @@ def main():
             rent_norm_plot_data = plot_data.get("rent_norm_plot", {})
             vacancy_plot_df = plot_data.get("vacancy_plot_df")
             scatter_data = plot_data.get("scatter_plot", {})
+            inputs_for_run = st.session_state.get("inputs", {}) # Get inputs used for this run
 
             # --- Rent vs Normal Plot Call ---
             st.markdown("#### Projected Market Rent vs. Fair Value Rent")
@@ -615,7 +708,7 @@ def main():
                 all(k in rent_norm_plot_data for k in ["market_p05", "market_p50", "market_p95", "normal_p50"]) and
                 all(len(rent_norm_plot_data[k]) == len(years_list_plot) for k in rent_norm_plot_data)):
                 try:
-                    fig_rent_norm = plot_rent_vs_normal( # Function call remains same
+                    fig_rent_norm = plot_rent_vs_normal(
                         years=years_list_plot,
                         market_p05=rent_norm_plot_data["market_p05"],
                         market_p50=rent_norm_plot_data["market_p50"],
@@ -623,6 +716,13 @@ def main():
                         normal_p50=rent_norm_plot_data["normal_p50"]
                     )
                     st.plotly_chart(fig_rent_norm, use_container_width=True)
+                    # Context for Rent vs Normal Plot
+                    st.caption(
+                        "This chart illustrates the simulation's rent dynamics. The blue band represents the 5th-95th percentile range "
+                        "of simulated *Market Rent* actually used in cash flows, with the solid blue line as the median. "
+                        "The purple dashed line shows the median simulated *Fair Value Rent* (the underlying trend). "
+                        "Observe how the Market Rent converges towards the Fair Value Rent over the 'Years to Normalize Rent' input."
+                    )
                 except Exception as e:
                     st.warning(f"Could not plot Projected Market Rent vs Fair Value Rent: {e}")
                     logging.error(f"Rent vs Fair Value plot error: {e}", exc_info=True)
@@ -636,6 +736,13 @@ def main():
                 try:
                     fig_vacancy_dist = plot_vacancy_distribution(vacancy_plot_df)
                     st.plotly_chart(fig_vacancy_dist, use_container_width=True)
+                    # Context for Vacancy Distribution Plot
+                    st.caption(
+                        "This box plot shows the simulated distribution of vacancy rates for each year. "
+                        "The box represents the middle 50% of outcomes (25th to 75th percentile), the line inside is the median, "
+                        "and the 'whiskers' typically extend to 1.5x the box height. Dots are outliers. "
+                        "Wider boxes or more outliers indicate greater uncertainty in vacancy loss for that year."
+                    )
                 except Exception as e:
                     st.warning(f'Error plotting vacancy distribution: {e}')
                     logging.error(f"Vacancy distribution plot error: {e}", exc_info=True)
@@ -644,11 +751,18 @@ def main():
             st.markdown("---")
 
             # --- Terminal Growth vs Exit Cap Plot ---
-            st.markdown("#### Terminal Rent Growth vs. Exit Cap Rate")
+            st.markdown("#### Terminal Year Rent Growth vs. Exit Cap Rate")
             if scatter_data and scatter_data.get("term_rent_growth_pct") and scatter_data.get("exit_cap_rate_pct"):
                  try:
                      fig_scatter = plot_terminal_growth_vs_exit_cap(scatter_data)
                      st.plotly_chart(fig_scatter, use_container_width=True)
+                     # Context for Terminal Growth vs Exit Cap Plot
+                     st.caption(
+                         "This scatter plot shows the relationship between the simulated rent growth in the final year "
+                         "and the simulated exit cap rate across all runs. The 'Exit Cap Adj. Factor' input influences this relationship. "
+                         "A negative correlation (typical) suggests higher terminal growth is associated with lower exit caps (higher valuations), and vice-versa. "
+                         "The red line shows the OLS trend."
+                    )
                  except Exception as e:
                      st.warning(f"Could not plot Terminal Growth vs Exit Cap: {e}")
                      logging.error(f"Terminal Growth vs Exit Cap plot error: {e}", exc_info=True)
@@ -656,16 +770,17 @@ def main():
                  st.warning("Scatter plot data is missing or invalid.")
             st.markdown("---")
 
-            # --- Simulated Underlying SOFR Rate Distribution Plot (with Forward Curve) ---
-            inputs_for_run = st.session_state.get("inputs", {}) # Assuming current inputs reflect the run
+        # --- Simulated Underlying SOFR Rate Distribution Plot ---
             if inputs_for_run.get("is_variable_rate", False):
                 st.markdown("#### Simulated Underlying SOFR Rate Distribution")
-                st.caption("Shows the median and 5th-95th percentile range of the simulated base SOFR rate (after floor, before spread), compared to the input Forward SOFR Curve.")
+
+                # --- Data Preparation for SOFR Plot ---
                 sim_results = processed_results.get("raw_results_for_audit", [])
                 fixed_spread = inputs_for_run.get("sofr_spread", 0.0)
                 hold_period_plot = len(years_list_plot)
                 underlying_sofr_paths = []
-                if hold_period_plot > 0:
+                # (Keep the loop for populating underlying_sofr_paths as is)
+                if hold_period_plot > 0 and sim_results:
                     for sim_result in sim_results:
                         effective_rates = sim_result.get("interest_rates", [])
                         if (isinstance(effective_rates, list) and
@@ -673,10 +788,10 @@ def main():
                             all(isinstance(r, (int, float)) and np.isfinite(r) for r in effective_rates)):
                             underlying_path = [r - fixed_spread for r in effective_rates]
                             underlying_sofr_paths.append(underlying_path)
-                        else:
-                            logging.debug(f"Skipping invalid interest rate path len {len(effective_rates)} vs {hold_period_plot} or non-finite: {effective_rates}")
 
+                # Prepare forward curve data for plotting
                 forward_rates_plot = []
+                # (Keep the logic for populating forward_rates_plot as is)
                 if forward_curve_data and years_list_plot:
                      try:
                          max_curve_year = max(forward_curve_data.keys()) if forward_curve_data else 1
@@ -688,32 +803,75 @@ def main():
                 elif years_list_plot:
                      forward_rates_plot = [np.nan] * len(years_list_plot)
 
+                # --- Plot SOFR Distribution ---
                 if underlying_sofr_paths:
                     try:
-                        fig_sofr = plot_simulated_sofr_distribution(years_list_plot, underlying_sofr_paths, forward_rates_plot)
+                        # <<< ADDED: Determine refi_year to pass (same as for Loan plot) >>>
+                        refi_year_plot = inputs_used_for_run.refi_year if inputs_used_for_run.enable_refinancing else None
+
+                        # <<< MODIFIED: Pass refi_year_plot to the function >>>
+                        fig_sofr = plot_simulated_sofr_distribution(
+                            years_list=years_list_plot,
+                            underlying_sofr_paths=underlying_sofr_paths,
+                            forward_rates_input=forward_rates_plot,
+                            refi_year=refi_year_plot # Pass the refi year
+                        )
                         st.plotly_chart(fig_sofr, use_container_width=True)
+                        # Context for SOFR Distribution Plot
+                        st.caption(
+                            "This chart displays the range (5th-95th percentile band and median line) of the simulated underlying SOFR component "
+                            "(including volatility, persistence, and floor, but *before* adding the spread). "
+                            "It's compared against the input Forward SOFR Curve (dotted line). Deviations highlight potential interest rate risk exposure. "
+                            "The dashed vertical line indicates the refinance year, if applicable." # Added mention of line
+                        )
                     except Exception as e:
                         st.warning(f"Could not generate SOFR distribution plot: {e}")
                         logging.error(f"Error plotting SOFR distribution: {e}", exc_info=True)
                 elif hold_period_plot > 0:
-                     st.info("No valid simulated interest rate data found for floating rate simulations.")
+                     st.info("No valid simulated interest rate data found for floating rate simulations. Check if 'interest_rates' key exists and contains valid data in simulation results.")
+                st.markdown("---")
 
-            # --- ADD Loan Balance Plot ---
-            st.markdown("---"); st.markdown("#### Loan Balance & LTV Over Time")
-            # Use get_valid_paths imported from utils
+            # --- Loan Balance & LTV Plot ---
+            # (Loan Balance/LTV plot code follows, no changes needed there now)
+            # ...
+        # --- Loan Balance & LTV Plot ---
+            # Ensure markdown separator doesn't appear twice if SOFR plot didn't run
+            if not inputs_for_run.get("is_variable_rate", False):
+                 st.markdown("---")
+            st.markdown("#### Loan Balance & LTV Over Time")
             loan_balance_paths = get_valid_paths(sim_results_completed_audit, "loan_balance", inputs_used_for_run.hold_period)
             ltv_paths = get_valid_paths(sim_results_completed_audit, "ltv_estimate", inputs_used_for_run.hold_period)
+
             if loan_balance_paths and years_list_plot:
-                 try:
-                      fig_loan = plot_loan_balance_distribution(years_list_plot, loan_balance_paths, ltv_paths)
-                      st.plotly_chart(fig_loan, use_container_width=True)
-                 except Exception as e:
-                      st.warning(f"Could not plot Loan Balance / LTV: {e}")
-                      logging.error(f"Loan Balance plot error: {e}", exc_info=True)
+                 if not ltv_paths:
+                      logger.warning("LTV path data missing for Loan Balance/LTV plot.")
+                      st.warning("Loan-to-Value (LTV) data is missing or invalid. Cannot display combined plot.")
+                 else:
+                      try:
+                           # <<< ADDED: Determine refi_year to pass >>>
+                           refi_year_plot = inputs_used_for_run.refi_year if inputs_used_for_run.enable_refinancing else None
+
+                           # <<< MODIFIED: Pass refi_year_plot to the function >>>
+                           fig_loan = plot_loan_balance_distribution(
+                               years=years_list_plot,
+                               loan_balance_paths=loan_balance_paths,
+                               ltv_paths=ltv_paths,
+                               refi_year=refi_year_plot # Pass the refi year
+                           )
+                           st.plotly_chart(fig_loan, use_container_width=True)
+                           # Context for Loan Balance / LTV Plot
+                           st.caption(
+                               "This chart shows the distribution (median and 5th-95th percentile bands) of the End-of-Year Loan Balance (left axis, $) "
+                               "and the estimated Loan-to-Value (LTV) ratio (right axis, %). Note how refinancing, if enabled, "
+                               "can cause a distinct change (indicated by the dashed line) in both the loan balance and LTV in the specified refinance year." # Added mention of dashed line
+                           )
+                      except Exception as e:
+                           st.warning(f"Could not plot Loan Balance / LTV: {e}")
+                           logging.error(f"Loan Balance plot error: {e}", exc_info=True)
             else:
                  st.warning("Loan Balance data not available for plotting.")
 
-            # --- END Loan Balance Plot ---
+        # ... (Risk Tab section starts next) ...
 
         with tabs[tab_keys.index("🛡️ Risk")]:
             # Display Risk metrics (logic seems mostly self-contained)
@@ -762,13 +920,22 @@ def main():
                          fig_box.update_layout(title="Box Plot of Calculated Levered IRR Outcomes", yaxis_title="Levered IRR", xaxis_title="", template="plotly_white", yaxis_tickformat=".1%", showlegend=False)
                          fig_box.update_xaxes(showticklabels=False)
                          st.plotly_chart(fig_box, use_container_width=True)
-                         if num_excluded > 0: st.caption(f"Note: {num_excluded} extreme outlier(s) excluded from plot.")
+                         # <<< NEW CONTEXT >>>
+                         st.caption(
+                             "This box plot summarizes the Levered IRR distribution. The box shows the interquartile range (IQR, 25th-75th percentile), "
+                             "the line inside is the median, whiskers typically extend to 1.5x IQR, and dots are outliers. The red cross indicates the mean."
+                             f"{f' Note: {num_excluded} extreme outlier(s) below {failure_threshold:.0%} excluded for visual clarity.' if num_excluded > 0 else ''}"
+                         )
+                         # --- Removed redundant caption about excluded outliers here ---
                      except Exception as e: st.warning(f"Could not generate Levered IRR Box Plot: {e}")
                  else: st.info(f"No Levered IRR data available to display after filtering {num_excluded} outlier(s).")
 
-
         with tabs[tab_keys.index("🔍 Audit")]:
             st.subheader("Detailed Audit of Individual Simulation")
+            st.info(
+                "This tab shows the detailed annual cash flows and metrics for a **single selected simulation run**. "
+                "Use the number input below to choose which specific simulation path (out of the total runs completed) you want to inspect."
+            )
             num_completed_simulations = len(sim_results_completed_audit)
             max_sim_sel = max(1, num_completed_simulations)
 
@@ -982,14 +1149,14 @@ def main():
                     else: st.warning("Could not display key assumptions for this simulation.")
 
         with tabs[tab_keys.index("🚪 Exit")]:
-            # Display Exit analysis plots (logic seems mostly self-contained)
             st.subheader("Exit Analysis")
-            # ... (Keep the exit analysis display logic from original script here) ...
-            st.caption("Distribution of Net Sale Proceeds & Simulated Exit Cap Rates across all valid runs.")
-            if not finite_exit_values or not finite_exit_caps: st.warning("Not enough valid exit results for analysis.")
+            st.caption("Distribution of Net Sale Proceeds & Simulated Exit Cap Rates across all valid runs.") # Keep existing overall caption
+
+            if not finite_exit_values or not finite_exit_caps:
+                st.warning("Not enough valid exit results for analysis.")
             else:
+                 # --- Net Exit Value Section ---
                  mean_exit_val = metrics.get('mean_exit_value', np.nan); median_exit_val = metrics.get('median_exit_value', np.nan); p05_exit_val = metrics.get('p05_exit_value', np.nan); p95_exit_val = metrics.get('p95_exit_value', np.nan)
-                 mean_exit_cap = metrics.get('mean_exit_cap', np.nan); median_exit_cap = metrics.get('median_exit_cap', np.nan)
                  st.markdown("#### Net Exit Value (After Transaction Costs)"); col1_exit, col2_exit, col3_exit, col4_exit = st.columns(4)
                  col1_exit.metric("Mean", f"${mean_exit_val:,.0f}" if np.isfinite(mean_exit_val) else "N/A"); col2_exit.metric("Median", f"${median_exit_val:,.0f}" if np.isfinite(median_exit_val) else "N/A"); col3_exit.metric("5th Pctl", f"${p05_exit_val:,.0f}" if np.isfinite(p05_exit_val) else "N/A"); col4_exit.metric("95th Pctl", f"${p95_exit_val:,.0f}" if np.isfinite(p95_exit_val) else "N/A")
                  try: # Exit Value Histogram
@@ -997,19 +1164,32 @@ def main():
                      fig_exit_val = go.Figure(data=[go.Bar(x=bin_centers, y=hist_vals, marker_color='mediumseagreen', opacity=0.8)])
                      fig_exit_val.update_layout(title=f"Distribution of Net Exit Values ({len(finite_exit_values)} runs)", xaxis_title="Net Exit Value ($)", yaxis_title="Frequency", bargap=0.1, template="plotly_white"); fig_exit_val.update_xaxes(tickformat="$,.0s")
                      st.plotly_chart(fig_exit_val, use_container_width=True)
+                     # <<< NEW CONTEXT >>>
+                     st.caption(
+                         "Shows the frequency distribution of potential Net Sale Proceeds (after transaction costs). "
+                         "The spread reflects uncertainty driven primarily by exit year NOI and simulated Exit Cap Rate volatility."
+                     )
                  except Exception as e: logger.error(f"Error plotting exit value distribution: {e}"); st.warning("Could not plot exit value distribution.")
-                 st.markdown("---"); st.markdown("#### Simulated Exit Cap Rate"); col1_cap, col2_cap, col3_cap, col4_cap = st.columns(4)
+
+                 st.markdown("---")
+
+                 # --- Exit Cap Rate Section ---
+                 st.markdown("#### Simulated Exit Cap Rate"); col1_cap, col2_cap, col3_cap, col4_cap = st.columns(4)
+                 mean_exit_cap = metrics.get('mean_exit_cap', np.nan); median_exit_cap = metrics.get('median_exit_cap', np.nan) # Fetch mean/median again
                  p05_cap = np.percentile(finite_exit_caps, 5) if finite_exit_caps else np.nan; p95_cap = np.percentile(finite_exit_caps, 95) if finite_exit_caps else np.nan
                  col1_cap.metric("Mean", f"{mean_exit_cap*100:.2f}%" if np.isfinite(mean_exit_cap) else "N/A"); col2_cap.metric("Median", f"{median_exit_cap*100:.2f}%" if np.isfinite(median_exit_cap) else "N/A"); col3_cap.metric("5th Pctl", f"{p05_cap*100:.2f}%" if np.isfinite(p05_cap) else "N/A"); col4_cap.metric("95th Pctl", f"{p95_cap*100:.2f}%" if np.isfinite(p95_cap) else "N/A")
                  try: # Exit Cap Histogram
-                     valid_exit_caps_pct = [x * 100 for x in finite_exit_caps]
+                     valid_exit_caps_pct = [x * 100 for x in finite_exit_caps] # Convert to percent for plotting
                      hist_caps, bin_edges_caps = np.histogram(valid_exit_caps_pct, bins=30); bin_centers_caps = 0.5 * (bin_edges_caps[1:] + bin_edges_caps[:-1])
                      fig_exit_cap = go.Figure(data=[go.Bar(x=bin_centers_caps, y=hist_caps, marker_color='mediumpurple', opacity=0.8)])
                      fig_exit_cap.update_layout(title=f"Distribution of Simulated Exit Cap Rates ({len(finite_exit_caps)} runs)", xaxis_title="Exit Cap Rate (%)", yaxis_title="Frequency", bargap=0.1, template="plotly_white"); fig_exit_cap.update_xaxes(ticksuffix="%")
                      st.plotly_chart(fig_exit_cap, use_container_width=True)
+                     # <<< NEW CONTEXT >>>
+                     st.caption(
+                         "Shows the frequency distribution of potential Exit Cap Rates at sale. This is influenced by the 'Average Exit Cap Rate' input, "
+                         "its associated volatility, and the 'Exit Cap Adj. Factor' based on terminal year rent growth."
+                     )
                  except Exception as e: logger.error(f"Error plotting exit cap distribution: {e}"); st.warning("Could not plot exit cap rate distribution.")
-
-
         with tabs[tab_keys.index("🔎 Sensitivity")]:
             # Sensitivity Analysis logic
             st.subheader("Sensitivity Analysis")
