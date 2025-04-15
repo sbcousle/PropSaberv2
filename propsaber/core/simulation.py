@@ -463,6 +463,7 @@ def _calculate_exit_values(inputs: SimulationInputs, state: Dict[str, Any], L_ma
             logger.warning(f"Terminal NOI <= 0 ({exit_noi:.0f}).")
             last_value_est = state.get("annual_property_value_estimate", [0])[-1]
             terminal_value_gross = max(inputs.exit_floor_value, last_value_est if np.isfinite(last_value_est) else 0.0)
+            logger.info(f"Negative NOI encountered ({exit_noi}). Using floor exit value: {terminal_value_gross}")
         elif sim_exit_cap <= FLOAT_ATOL:
             logger.warning(f"Sim exit cap near zero ({sim_exit_cap:.4f}).")
             last_value_est = state.get("annual_property_value_estimate", [0])[-1]
