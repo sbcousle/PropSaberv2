@@ -613,10 +613,20 @@ def _render_refinancing_inputs(default_inputs: SimulationInputs):
             Target Loan-to-Value for the new loan, based on the property's simulated value in the Refinance Year.
             Determines cash-out (if New LTV * Value > Old Balance) or cash-in.
             """
+            # Sanitize refi_new_ltv value
+            raw_ltv_value = get_input_value("refi_new_ltv", default_inputs.refi_new_ltv)
+            try:
+                ltv_value = float(raw_ltv_value) * 100.0
+                if not (50.0 <= ltv_value <= 85.0):
+                    ltv_value = float(default_inputs.refi_new_ltv) * 100.0
+                    logger.warning(f"Invalid refi_new_ltv value {raw_ltv_value}, resetting to default {default_inputs.refi_new_ltv}")
+            except (ValueError, TypeError):
+                ltv_value = float(default_inputs.refi_new_ltv) * 100.0
+                logger.warning(f"Failed to convert refi_new_ltv value {raw_ltv_value}, using default {default_inputs.refi_new_ltv}")
             st.number_input(
                 "New Loan: Target LTV (%)",
                 min_value=50.0, max_value=85.0, step=0.01,
-                value=float(get_input_value("refi_new_ltv", default_inputs.refi_new_ltv) * 100.0),
+                value=ltv_value,
                 help=refi_ltv_help, key="input_refi_new_ltv",
                 format=FMT_PERCENT_TWO_DP
             )
