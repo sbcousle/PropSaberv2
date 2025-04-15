@@ -175,7 +175,7 @@ def main():
     processed_results = st.session_state.get("processed_results")
 
     if run_sim_button:
-        logger.info("Run Simulation button clicked.")
+        logger.info("Run Simulation button clicked.")  
         st.session_state["processed_results"] = None
         processed_results = None
 
@@ -198,6 +198,33 @@ def main():
             st.error("Cannot run simulation: Forward curve data failed to load.")
             inputs_valid_for_sim = False
 
+    # --- Simulation Execution ---
+    processed_results = st.session_state.get("processed_results")
+
+    if run_sim_button:
+        logger.info("Run Simulation button clicked.")
+        st.session_state["processed_results"] = None
+        processed_results = None
+
+        # Use the sim_inputs_obj created earlier, check if it's valid
+        if sim_inputs_obj and inputs_valid_for_snapshot:
+            sim_inputs_to_run = sim_inputs_obj
+            num_sims_run = sim_inputs_to_run.num_simulations
+            inputs_valid_for_sim = True
+            logger.info("Using pre-validated SimulationInputs object for simulation run.")
+        else:
+            # Use the flag set during object creation attempt
+            if not inputs_valid_for_snapshot:
+                st.error("Cannot run simulation due to input configuration errors identified earlier.")
+            else: # Should not happen if logic above is correct, but as safety
+                st.error("Cannot run simulation: Input object not available.")
+            logger.error("Simulation run aborted because SimulationInputs object creation failed or object unavailable.")
+            inputs_valid_for_sim = False
+
+        if not data_loaded_ok:
+            st.error("Cannot run simulation: Forward curve data failed to load.")
+            inputs_valid_for_sim = False
+
         if inputs_valid_for_sim:
             with st.spinner(f"Running {num_sims_run} simulations..."):
                 mc_results = run_monte_carlo(
@@ -211,11 +238,23 @@ def main():
                 st.error(f"Simulation Error: {error_message}"); logger.error(f"Sim execution failed: {error_message}")
                 st.session_state["processed_results"] = None
             else:
-                st.session_state["processed_results"] = mc_results; logger.info("Simulation finished successfully.")
+                st.session_state["processed_results"] = mc_results
+                logger.info("Simulation finished successfully.")
+                # Log cash flows once, with a check to avoid duplicates
+                results_hash = hash(str(mc_results))
+                if st.session_state.get("last_logged_results", 0) != results_hash:
+                    try:
+                        avg_unlev_stream = mc_results.get("avg_cash_flows", {}).get("unlevered_cf", [])
+                        avg_lev_stream = mc_results.get("avg_cash_flows", {}).get("levered_cf", [])
+                        if avg_unlev_stream and avg_lev_stream:
+                            logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream}")
+                            logger.info(f"Levered Cash Flow Stream: {avg_lev_stream}")
+                            st.session_state["last_logged_results"] = results_hash
+                    except Exception as e:
+                        logger.error(f"Error logging cash flows: {e}")
             st.rerun()
         else:
             st.warning("Simulation not run due to input errors or missing data.")
-
 
     # --- Display Results ---
     st.markdown("---")
@@ -310,6 +349,7 @@ def main():
                     st.error(f"Error calculating Initial State Snapshot: {e}"); logger.error(f"Initial State Calc Error after run: {e}", exc_info=True)
             else:
                  st.warning("Cannot display Initial State Snapshot as input object could not be recreated.")
+
         # --- Other Tabs (IRR, Pro-Forma, Dynamics, Risk, Audit, Exit, Sensitivity, Scenarios, Guide) ---
         with tabs[tab_keys.index("📈 IRR")]:
              st.subheader("IRR Distribution Analysis")
@@ -473,9 +513,9 @@ def main():
                 try:
                     avg_unlev_stream_vals = proforma_df.loc["Unlevered Cash Flow (IRR)"].astype(float).tolist()
                     avg_lev_stream_vals = proforma_df.loc["Levered Cash Flow (IRR)"].astype(float).tolist()
-                    # Debug: Log the streams
-                    logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream_vals}")
-                    logger.info(f"Levered Cash Flow Stream: {avg_lev_stream_vals}")
+                    # Remove logging to prevent duplicates; logged at simulation execution
+                    # logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream_vals}")
+                    # logger.info(f"Levered Cash Flow Stream: {avg_lev_stream_vals}")
                     # Check if streams are valid for IRR
                     if len(avg_unlev_stream_vals) >= 2 and all(np.isfinite(avg_unlev_stream_vals)) and any(x < 0 for x in avg_unlev_stream_vals) and any(x > 0 for x in avg_unlev_stream_vals):
                         avg_unlev_irr = npf.irr(avg_unlev_stream_vals)
