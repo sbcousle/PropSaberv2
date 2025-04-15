@@ -673,7 +673,7 @@ def render_sidebar_inputs(
     _render_exit_inputs(defaults)
     st.markdown("---")
     st.subheader("Correlation & Risk")
-    _render_correlation_inputs(defaults)
+    _render_correlations_inputs(defaults)
     _render_risk_metric_inputs(defaults)
     st.markdown("---")
 
