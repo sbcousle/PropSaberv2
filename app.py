@@ -268,7 +268,7 @@ def main():
             else:
                 st.session_state["processed_results"] = mc_results
                 logger.info("Simulation finished successfully.")
-            st.rerun()  # Rerun to display updated results or errors
+          
         else:
             st.warning("Simulation not run due to input errors or missing data.")
 
