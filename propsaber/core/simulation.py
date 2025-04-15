@@ -463,17 +463,21 @@ def _calculate_exit_values(inputs: SimulationInputs, state: Dict[str, Any], L_ma
             logger.warning(f"Terminal NOI <= 0 ({exit_noi:.0f}).")
             last_value_est = state.get("annual_property_value_estimate", [0])[-1]
             terminal_value_gross = max(inputs.exit_floor_value, last_value_est if np.isfinite(last_value_est) else 0.0)
-            logger.info(f"Negative NOI encountered ({exit_noi}). Using floor exit value: {terminal_value_gross}")
+            logger.info(f"Negative NOI encountered ({exit_noi:.0f}). Using floor exit value: {terminal_value_gross:,.0f}")
         elif sim_exit_cap <= FLOAT_ATOL:
             logger.warning(f"Sim exit cap near zero ({sim_exit_cap:.4f}).")
             last_value_est = state.get("annual_property_value_estimate", [0])[-1]
             terminal_value_gross = max(inputs.exit_floor_value, last_value_est if np.isfinite(last_value_est) else 0.0)
+            logger.info(f"Near-zero cap rate encountered ({sim_exit_cap:.4f}). Using floor exit value: {terminal_value_gross:,.0f}")
         else:
             terminal_value_gross = exit_noi / sim_exit_cap
         terminal_value_gross = max(terminal_value_gross, inputs.exit_floor_value)
         transaction_costs = terminal_value_gross * inputs.transaction_cost_pct
         terminal_value_net = max(terminal_value_gross - transaction_costs, 0.0)
-        logger.debug(f"Exit Calc: ExitNOI={exit_noi:.0f}, SimCap={sim_exit_cap:.4f}, GrossValue={terminal_value_gross:.0f}, NetValue={terminal_value_net:.0f}")
+        logger.debug(
+            f"Exit Calc: ExitNOI={exit_noi:.0f}, SimCap={sim_exit_cap:.4f}, "
+            f"GrossValue={terminal_value_gross:,.0f}, NetValue={terminal_value_net:,.0f}"
+        )
         last_unlevered_cf = state["annual_unlevered_cf"][-1] if state.get("annual_unlevered_cf") and np.isfinite(state["annual_unlevered_cf"][-1]) else 0.0
         last_levered_cf = state["annual_levered_cf"][-1] if state.get("annual_levered_cf") and np.isfinite(state["annual_levered_cf"][-1]) else 0.0
         loan_payoff = state["annual_loan_balance"][-1] if state.get("annual_loan_balance") and np.isfinite(state["annual_loan_balance"][-1]) else 0.0
