@@ -418,103 +418,126 @@ def main():
             if not avg_cash_flow_data or not avg_cash_flow_data.get("noi") or len(avg_cash_flow_data["noi"]) != hold_period_actual or any(pd.isna(x) for x in avg_cash_flow_data["noi"]):
                 st.info("Average cash flow data is missing or incomplete for Pro-Forma.")
             else:
+                # --- Initial Setup Calculations ---
                 purchase_price = inputs_used_for_run.purchase_price
                 loan_to_cost = inputs_used_for_run.loan_to_cost
-                initial_loan_proceeds = purchase_price * loan_to_cost
+                initial_loan_proceeds = purchase_price * loan_to_cost # Gross loan amount
                 initial_loan_costs = initial_loan_proceeds * inputs_used_for_run.initial_loan_costs_pct
-                net_initial_loan_proceeds = initial_loan_proceeds - initial_loan_costs
-                initial_equity = purchase_price - net_initial_loan_proceeds
+                net_initial_loan_proceeds = initial_loan_proceeds - initial_loan_costs # Net proceeds after costs
+                initial_equity = purchase_price - net_initial_loan_proceeds # Equity = Price - Net Proceeds
 
+                # --- Refinancing Setup Calculations ---
                 refi_year = inputs_used_for_run.refi_year if inputs_used_for_run.enable_refinancing else None
-                # Calculate refinancing proceeds: new loan amount - costs (not subtracting payoff)
-                refi_proceeds_net = 0.0
-                if refi_year:
-                    noi_at_refi = avg_cash_flow_data.get("noi", [0.0] * hold_period_actual)[refi_year - 1]
-                    refi_cap_rate = inputs_used_for_run.mean_exit_cap_rate / 100.0
-                    if noi_at_refi > 0 and refi_cap_rate > FLOAT_ATOL:
-                        property_value = noi_at_refi / refi_cap_rate
-                        new_loan_amount = property_value * inputs_used_for_run.refi_new_ltv
-                        refi_costs = new_loan_amount * inputs_used_for_run.refi_costs_pct_loan
-                        refi_proceeds_net = new_loan_amount - refi_costs
-                    else:
-                        logger.warning(f"Cannot calculate refinancing proceeds: NOI={noi_at_refi}, CapRate={refi_cap_rate}")
-                # Loan payoff at refi is the loan balance at the start of the refi year
-                refi_loan_payoff = avg_cash_flow_data.get("loan_balance", [0.0] * hold_period_actual)[refi_year - 2] if refi_year and refi_year > 1 else 0.0
-
-                net_sale_proceeds = metrics.get("mean_exit_value", 0.0)
-                final_loan_payoff = metrics.get("mean_loan_payoff", avg_cash_flow_data.get("loan_balance", [0.0])[-1] if avg_cash_flow_data.get("loan_balance") else 0.0)
-
-                # Initialize rows for Net Loan Proceeds and Loan Payoff
-                net_loan_proceeds_row = [net_initial_loan_proceeds] + [0.0] * hold_period_actual
-                loan_payoff_row = [0.0] * (hold_period_actual + 1)
-
-                if refi_year:
-                    net_loan_proceeds_row[refi_year] = refi_proceeds_net
-                    loan_payoff_row[refi_year] = -refi_loan_payoff
-
-                loan_payoff_row[-1] = -final_loan_payoff  # Final loan payoff at sale
-
-                last_avg_unlev_cf = avg_cash_flow_data.get("unlevered_cf", [0.0])[-1] if avg_cash_flow_data.get("unlevered_cf") else 0.0
-                last_avg_lev_cf = avg_cash_flow_data.get("levered_cf", [0.0])[-1] if avg_cash_flow_data.get("levered_cf") else 0.0
-                final_avg_unlev_cf = last_avg_unlev_cf + net_sale_proceeds
-                final_avg_lev_cf = last_avg_lev_cf + net_sale_proceeds - final_loan_payoff
-
                 total_years = hold_period_actual + 1
 
+                # Initialize specific loan event rows
+                initial_proceeds_net_row = [net_initial_loan_proceeds] + [0.0] * hold_period_actual # <<< Use Net Proceeds
+                refi_proceeds_net_row = [0.0] * total_years
+                refi_payoff_row = [0.0] * total_years
+                final_payoff_row = [0.0] * total_years
+
+                # Calculate average refi values if applicable
+                avg_refi_proceeds_net = 0.0
+                avg_refi_loan_payoff = 0.0
+                if refi_year:
+                    avg_refi_proceeds_net_list = avg_cash_flow_data.get("refi_proceeds_net", [0.0] * hold_period_actual)
+                    # avg_refi_costs_list = avg_cash_flow_data.get("refi_costs", [0.0] * hold_period_actual) # Not needed directly for rows now
+                    avg_loan_balance_list = avg_cash_flow_data.get("loan_balance", [0.0] * hold_period_actual)
+
+                    # Get average refinancing proceeds NET OF COSTS for the refi year
+                    if len(avg_refi_proceeds_net_list) >= refi_year:
+                        avg_refi_proceeds_net = avg_refi_proceeds_net_list[refi_year - 1]
+                        refi_proceeds_net_row[refi_year] = avg_refi_proceeds_net # <<< Use Net Proceeds
+                    else:
+                        logger.warning(f"Pro-Forma: Refi year {refi_year} out of bounds for avg refi proceeds list.")
+
+                    # Calculate average refi loan payoff (payoff of original loan)
+                    if refi_year > 1 and len(avg_loan_balance_list) >= refi_year -1:
+                         avg_refi_loan_payoff = avg_loan_balance_list[refi_year - 2] # Balance at end of prior year
+                         refi_payoff_row[refi_year] = -avg_refi_loan_payoff # Negative sign indicates payoff
+                    elif refi_year == 1:
+                         avg_refi_loan_payoff = initial_loan_proceeds # Payoff initial gross loan if refi in year 1
+                         refi_payoff_row[refi_year] = -avg_refi_loan_payoff
+                    else:
+                         logger.warning(f"Pro-Forma: Cannot determine avg refi loan payoff for year {refi_year}.")
+
+                # --- Exit Calculations ---
+                net_sale_proceeds = metrics.get("mean_exit_value", 0.0)
+                # Final loan payoff (payoff of loan active at sale)
+                final_loan_payoff = avg_cash_flow_data.get("loan_balance", [0.0])[-1] if avg_cash_flow_data.get("loan_balance") else 0.0
+                final_payoff_row[-1] = -final_loan_payoff # Negative sign
+
+                # --- Calculate Final Cash Flows for IRR Rows ---
+                last_avg_unlev_cf = avg_cash_flow_data.get("unlevered_cf", [0.0])[-1] if avg_cash_flow_data.get("unlevered_cf") else 0.0
+                last_avg_lev_cf = avg_cash_flow_data.get("levered_cf", [0.0])[-1] if avg_cash_flow_data.get("levered_cf") else 0.0
+                final_avg_unlev_cf_for_irr = last_avg_unlev_cf + net_sale_proceeds
+                final_avg_lev_cf_for_irr = last_avg_lev_cf + net_sale_proceeds - final_loan_payoff
+
+                # --- Calculate Intermediate Rows Safely ---
+                avg_noi = avg_cash_flow_data.get("noi", [np.nan]*hold_period_actual)
+                avg_capex = avg_cash_flow_data.get("capex", [np.nan]*hold_period_actual)
+                avg_interest = avg_cash_flow_data.get("interest", [np.nan]*hold_period_actual)
+                avg_principal = avg_cash_flow_data.get("principal", [np.nan]*hold_period_actual)
+
+                cfbds_row_vals = [ (n - c) if pd.notna(n) and pd.notna(c) else np.nan for n, c in zip(avg_noi, avg_capex) ]
+                total_debt_service_vals = [ -(abs(i) + abs(p)) if pd.notna(i) and pd.notna(p) else np.nan for i, p in zip(avg_interest, avg_principal) ]
+
+                # --- Define Pro-Forma Rows (Revised Structure) ---
                 proforma_rows = [
+                    # --- Unlevered Section ---
                     ("--- Unlevered Cash Flows ---", [np.nan] * total_years),
                     ("Purchase Price", [-purchase_price] + [np.nan] * hold_period_actual),
-                    ("--- Operations ---", [np.nan] * total_years),
-                    ("Potential Gross Rent (PGR)", [np.nan] + avg_cash_flow_data.get("potential_rent", [])),
-                    ("Less: Vacancy Loss", [np.nan] + [-abs(v) for v in avg_cash_flow_data.get("vacancy_loss", [])]),
-                    ("Effective Gross Rent (EGR)", [np.nan] + avg_cash_flow_data.get("egr", [])),
-                    ("Plus: Other Income", [np.nan] + avg_cash_flow_data.get("other_income", [])),
-                    ("Effective Gross Income (EGI)", [np.nan] + avg_cash_flow_data.get("egi", [])),
-                    ("Less: Operating Expenses", [np.nan] + [-abs(e) for e in avg_cash_flow_data.get("expenses", [])]),
-                    ("Net Operating Income (NOI)", [np.nan] + avg_cash_flow_data.get("noi", [])),
-                    ("Less: Capital Expenditures (CapEx)", [np.nan] + [-abs(c) for c in avg_cash_flow_data.get("capex", [])]),
-                    ("Unlevered Cash Flow (Op.)", [np.nan] + avg_cash_flow_data.get("unlevered_cf", [])),
-                    ("--- Levered Cash Flows ---", [np.nan] * total_years),
-                    ("Net Loan Proceeds", net_loan_proceeds_row),
-                    ("Loan Payoff", loan_payoff_row),
-                    ("--- Debt Service ---", [np.nan] * total_years),
-                    ("Interest Paid", [np.nan] + [-abs(i) for i in avg_cash_flow_data.get("interest", [])]),
-                    ("Principal Paid", [np.nan] + [-abs(p) for p in avg_cash_flow_data.get("principal", [])]),
-                    ("Levered Cash Flow (Op.)", [np.nan] + avg_cash_flow_data.get("levered_cf", [])),
+                    ("Potential Gross Rent (PGR)", [np.nan] + avg_cash_flow_data.get("potential_rent", [np.nan]*hold_period_actual)),
+                    ("Less: Vacancy Loss", [np.nan] + [-abs(v) if pd.notna(v) else np.nan for v in avg_cash_flow_data.get("vacancy_loss", [np.nan]*hold_period_actual)]),
+                    ("Effective Gross Rent (EGR)", [np.nan] + avg_cash_flow_data.get("egr", [np.nan]*hold_period_actual)),
+                    ("Plus: Other Income", [np.nan] + avg_cash_flow_data.get("other_income", [np.nan]*hold_period_actual)),
+                    ("Effective Gross Income (EGI)", [np.nan] + avg_cash_flow_data.get("egi", [np.nan]*hold_period_actual)),
+                    ("Less: Operating Expenses", [np.nan] + [-abs(e) if pd.notna(e) else np.nan for e in avg_cash_flow_data.get("expenses", [np.nan]*hold_period_actual)]),
+                    ("Net Operating Income (NOI)", [np.nan] + avg_noi),
+                    ("Less: Capital Expenditures (CapEx)", [np.nan] + [-abs(c) if pd.notna(c) else np.nan for c in avg_capex]),
+                    ("Cash Flow Before Debt Service (CFBDS)", [np.nan] + cfbds_row_vals), # Derived
+
+                    # --- Levered Section ---
+                    ("--- Levered Cash Flows & Debt ---", [np.nan] * total_years),
+                    ("Net Loan Proceeds", initial_proceeds_net_row), # <<< UPDATED ROW
+                    ("Net Refinancing Proceeds", refi_proceeds_net_row),   # <<< UPDATED ROW
+                    ("Loan Payoff", final_payoff_row),                   # <<< UPDATED ROW
+                    ("Interest Paid", [np.nan] + [-abs(i) if pd.notna(i) else np.nan for i in avg_interest]), # Sign in label
+                    ("Principal Paid", [np.nan] + [-abs(p) if pd.notna(p) else np.nan for p in avg_principal]), # Sign in label
+                    ("Total Debt Service", [np.nan] + total_debt_service_vals), # Derived
+
+                    # --- Sale & IRR Section ---
                     ("--- Sale ---", [np.nan] * total_years),
                     ("Net Sale Proceeds", [np.nan] * hold_period_actual + [net_sale_proceeds]),
                     ("--- Cash Flows for IRR ---", [np.nan] * total_years),
-                    ("Unlevered Cash Flow (IRR)", [-purchase_price] + avg_cash_flow_data.get("unlevered_cf", [0.0] * hold_period_actual)[:-1] + [final_avg_unlev_cf]),
-                    ("Levered Cash Flow (IRR)", [-initial_equity] + avg_cash_flow_data.get("levered_cf", [0.0] * hold_period_actual)[:-1] + [final_avg_lev_cf]),
+                    ("Unlevered Cash Flow (IRR)", [-purchase_price] + avg_cash_flow_data.get("unlevered_cf", [0.0] * hold_period_actual)[:-1] + [final_avg_unlev_cf_for_irr]),
+                    ("Levered Cash Flow (IRR)", [-initial_equity] + avg_cash_flow_data.get("levered_cf", [0.0] * hold_period_actual)[:-1] + [final_avg_lev_cf_for_irr]),
+
+                    # --- Other Info ---
                     ("--- Other Info ---", [np.nan] * total_years),
-                    ("End of Year Loan Balance", [net_initial_loan_proceeds] + avg_cash_flow_data.get("loan_balance", []))
+                    # <<< UPDATED: Shows GROSS initial loan in Yr 0, then EOY balances >>>
+                    ("End of Year Loan Balance", [initial_loan_proceeds] + avg_cash_flow_data.get("loan_balance", [np.nan]*hold_period_actual))
                 ]
 
+                # --- DataFrame Creation and Formatting ---
                 clean_rows = [
                     (label, vals if isinstance(vals, list) and len(vals) == total_years else [np.nan] * total_years)
                     for label, vals in proforma_rows
                 ]
-
                 proforma_df = pd.DataFrame.from_dict(
                     {label: vals for label, vals in clean_rows},
                     orient="index",
                     columns=[f"Year {i}" for i in range(total_years)]
                 )
-
                 def fmt_proforma(val):
-                    if pd.isna(val):
-                        return "-"
-                    try:
-                        num_val = float(val)
-                        if abs(num_val) >= 1:
-                            return f"$({abs(num_val):,.0f})" if num_val < 0 else f"${num_val:,.0f}"
-                        elif abs(num_val) > 1e-3:
-                            return f"$({abs(num_val):,.2f})" if num_val < 0 else f"${num_val:,.2f}"
-                        else:
-                            return "$0"
-                    except (TypeError, ValueError):
-                        return str(val)
-
+                     if pd.isna(val): return "-"
+                     try:
+                         num_val = float(val)
+                         if abs(num_val) < 1e-3: return "$0"
+                         fmt_str = "${:,.0f}" if abs(num_val) >= 1 else "${:,.2f}"
+                         # Use parentheses for negative financial values
+                         return fmt_str.format(num_val) if num_val >= 0 else f"({fmt_str.format(abs(num_val))})"
+                     except (TypeError, ValueError): return str(val)
                 st.dataframe(
                     proforma_df.style.format(fmt_proforma, na_rep="-")
                     .set_properties(**{"text-align": "right"})
@@ -522,74 +545,61 @@ def main():
                     use_container_width=True
                 )
 
+                # --- IRR Calculation from Average Stream ---
                 st.markdown("##### IRR Calculated from Average Cash Flow Stream")
-                avg_unlev_irr_display = "N/A"
-                avg_lev_irr_display = "N/A"
+                # ... (Keep existing IRR calculation logic using the "Levered Cash Flow (IRR)" row) ...
+                avg_unlev_irr_display = "N/A"; avg_lev_irr_display = "N/A"
                 try:
-                    avg_unlev_stream_vals = proforma_df.loc["Unlevered Cash Flow (IRR)"].astype(float).tolist()
-                    avg_lev_stream_vals = proforma_df.loc["Levered Cash Flow (IRR)"].astype(float).tolist()
-                    # Debug: Log the streams
-                    logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream_vals}")
-                    logger.info(f"Levered Cash Flow Stream: {avg_lev_stream_vals}")
-                    # Check if streams are valid for IRR
+                    unlev_irr_label = "Unlevered Cash Flow (IRR)"; lev_irr_label = "Levered Cash Flow (IRR)"
+                    avg_unlev_stream_vals = proforma_df.loc[unlev_irr_label].astype(float).tolist()
+                    avg_lev_stream_vals = proforma_df.loc[lev_irr_label].astype(float).tolist()
+                    logger.info(f"ProForma Unlevered Cash Flow Stream: {avg_unlev_stream_vals}")
+                    logger.info(f"ProForma Levered Cash Flow Stream: {avg_lev_stream_vals}")
                     if len(avg_unlev_stream_vals) >= 2 and all(np.isfinite(avg_unlev_stream_vals)) and any(x < 0 for x in avg_unlev_stream_vals) and any(x > 0 for x in avg_unlev_stream_vals):
-                        avg_unlev_irr = npf.irr(avg_unlev_stream_vals)
-                        if np.isfinite(avg_unlev_irr):
-                            avg_unlev_irr_display = f"{avg_unlev_irr:.1%}"
-                        else:
-                            logger.warning("Unlevered IRR calculation returned non-finite value.")
-                    else:
-                        logger.warning("Unlevered cash flow stream invalid for IRR calculation: insufficient length, non-finite values, or no sign changes.")
-                    
+                         avg_unlev_irr = npf.irr(avg_unlev_stream_vals); avg_unlev_irr_display = f"{avg_unlev_irr:.1%}" if np.isfinite(avg_unlev_irr) else "Calc Error"
+                    else: logger.warning("ProForma Unlevered cash flow stream invalid for IRR.")
                     if len(avg_lev_stream_vals) >= 2 and all(np.isfinite(avg_lev_stream_vals)) and any(x < 0 for x in avg_lev_stream_vals) and any(x > 0 for x in avg_lev_stream_vals):
-                        avg_lev_irr = npf.irr(avg_lev_stream_vals)
-                        if np.isfinite(avg_lev_irr):
-                            avg_lev_irr_display = f"{avg_lev_irr:.1%}"
-                        else:
-                            logger.warning("Levered IRR calculation returned non-finite value.")
-                    else:
-                        logger.warning("Levered cash flow stream invalid for IRR calculation: insufficient length, non-finite values, or no sign changes.")
-                except Exception as e:
-                    logger.error(f"Error calculating average IRR: {e}")
+                         avg_lev_irr = npf.irr(avg_lev_stream_vals); avg_lev_irr_display = f"{avg_lev_irr:.1%}" if np.isfinite(avg_lev_irr) else "Calc Error"
+                    else: logger.warning("ProForma Levered cash flow stream invalid for IRR.")
+                except KeyError as ke: logger.error(f"IRR calculation failed: Row label not found - {ke}. Check proforma_rows definitions."); st.warning(f"Could not calculate average IRRs due to missing row: {ke}")
+                except Exception as e: logger.error(f"Error calculating average IRR: {e}"); avg_unlev_irr_display = "Error"; avg_lev_irr_display = "Error"
+                col1, col2 = st.columns(2); col1.metric("Unlevered IRR (Avg CF)", avg_unlev_irr_display); col2.metric("Levered IRR (Avg CF)", avg_lev_irr_display)
 
-                col1, col2 = st.columns(2)
-                col1.metric("Unlevered IRR (Avg CF)", avg_unlev_irr_display)
-                col2.metric("Levered IRR (Avg CF)", avg_lev_irr_display)
-
-                # Key assumptions table
+                # --- Key Assumptions Table ---
                 st.markdown("---")
                 st.subheader("Key Assumptions & Metrics (Average by Year)")
+                # ... (Keep existing assumptions table logic) ...
                 exit_cap_rate = metrics.get("mean_exit_cap", np.nan)
-                assumption_rows = [
-                    ("Avg Market Rent ($/Unit/Mo)", avg_cash_flow_data.get("rent_per_unit", [])),
-                    ("Vacancy Rate (%)", avg_cash_flow_data.get("vacancy_rate", [])),
-                    ("Rent Growth (%)", avg_cash_flow_data.get("rent_growth_pct", [])),
-                    ("Expense Growth (%)", avg_cash_flow_data.get("expense_growth_pct", [])),
-                    ("CapEx Growth (%)", avg_cash_flow_data.get("capex_growth_pct", [])),
-                    ("Interest Rate (%)", avg_cash_flow_data.get("interest_rates", []))
-                ]
-
+                assumption_rows_data = {
+                     "Avg Market Rent ($/Unit/Mo)": avg_cash_flow_data.get("rent_per_unit", []),
+                     "Vacancy Rate (%)": avg_cash_flow_data.get("vacancy_rate", []),
+                     "Rent Growth (%)": avg_cash_flow_data.get("rent_growth_pct", []),
+                     "Expense Growth (%)": avg_cash_flow_data.get("expense_growth_pct", []),
+                     "CapEx Growth (%)": avg_cash_flow_data.get("capex_growth_pct", []),
+                     ("Interest Rate (%)" if not inputs_used_for_run.is_variable_rate else "Effective Interest Rate (%)"): avg_cash_flow_data.get("interest_rates", [])
+                }
+                assumption_rows = [(label, data) for label, data in assumption_rows_data.items()]
                 if np.isfinite(exit_cap_rate):
-                    cap_rate_row = [np.nan] * (hold_period_actual - 1) + [exit_cap_rate]
-                    assumption_rows.append(("Exit Cap Rate (%)", cap_rate_row))
-
+                     cap_rate_row = [np.nan] * (hold_period_actual - 1) + [exit_cap_rate]
+                     assumption_rows.append(("Exit Cap Rate (%)", cap_rate_row))
                 clean_assumptions = [(label, vals) for label, vals in assumption_rows if isinstance(vals, list) and len(vals) == hold_period_actual]
                 if clean_assumptions:
-                    assumption_df = pd.DataFrame({label: vals for label, vals in clean_assumptions}).T
-                    assumption_df.columns = [f"Yr {i+1}" for i in range(hold_period_actual)]
-                    assumption_df.index.name = "Assumption"
-
-                    def format_assumption_value(val, label):
-                        if pd.isna(val): return "-"
-                        if "Rent ($/Unit/Mo)" in label: return f"${val:,.0f}"
-                        elif "Rate (%)" in label: return f"{val:.1%}" if isinstance(val, float) else f"{val:.1f}%"
-                        elif "Growth (%)" in label: return f"{val:.1f}%"
-                        else: return f"{val:.2f}"
-
-                    formatted_df = assumption_df.apply(lambda row: pd.Series([format_assumption_value(val, row.name) for val in row], index=row.index), axis=1)
-                    st.dataframe(formatted_df.style.set_properties(**{"text-align": "right"}).set_table_styles([{"selector": "th", "props": [("text-align", "left")]}]), use_container_width=True)
-                else:
-                    st.warning("Could not calculate key assumptions by year.")
+                     assumption_df = pd.DataFrame({label: vals for label, vals in clean_assumptions}).T
+                     assumption_df.columns = [f"Yr {i+1}" for i in range(hold_period_actual)]
+                     assumption_df.index.name = "Assumption"
+                     def format_assumption_value(val, label):
+                          if pd.isna(val): return "-"
+                          try:
+                               f_val = float(val)
+                               if "Rent ($/Unit/Mo)" in label: return f"${f_val:,.0f}"
+                               elif "Rate (%)" in label and "Growth" not in label and "Cap" not in label: return f"{f_val:.1%}"
+                               elif "Vacancy Rate (%)" in label : return f"{f_val*100:.1f}%"
+                               elif "%" in label: return f"{f_val:.1f}%"
+                               else: return f"{f_val:.2f}"
+                          except (ValueError, TypeError): return str(val)
+                     formatted_df = assumption_df.apply(lambda row: pd.Series([format_assumption_value(val, row.name) for val in row], index=row.index), axis=1)
+                     st.dataframe(formatted_df.style.set_properties(**{"text-align": "right"}).set_table_styles([{"selector": "th", "props": [("text-align", "left")]}]), use_container_width=True)
+                else: st.warning("Could not calculate key assumptions by year.")
 
         with tabs[tab_keys.index("📉 Dynamics")]:
             st.subheader("Key Simulation Dynamics Over Time")
@@ -702,7 +712,9 @@ def main():
                       logging.error(f"Loan Balance plot error: {e}", exc_info=True)
             else:
                  st.warning("Loan Balance data not available for plotting.")
+
             # --- END Loan Balance Plot ---
+
         with tabs[tab_keys.index("🛡️ Risk")]:
             # Display Risk metrics (logic seems mostly self-contained)
             st.subheader("Risk Profile & Risk-Adjusted Return Metrics")
@@ -759,138 +771,157 @@ def main():
             st.subheader("Detailed Audit of Individual Simulation")
             num_completed_simulations = len(sim_results_completed_audit)
             max_sim_sel = max(1, num_completed_simulations)
+
+            # --- Simulation Selection ---
             if 'selected_sim_index' not in st.session_state:
                 st.session_state.selected_sim_index = 0
             current_index = min(max(0, st.session_state.selected_sim_index), max_sim_sel - 1)
             selected_sim_display = st.number_input(
                 "Select Simulation # to Audit",
-                min_value=1,
-                max_value=max_sim_sel,
-                value=current_index + 1,
-                step=1,
-                disabled=(num_completed_simulations == 0),
-                key="audit_sim_selector"
+                min_value=1, max_value=max_sim_sel, value=current_index + 1, step=1,
+                disabled=(num_completed_simulations == 0), key="audit_sim_selector"
             )
             st.session_state.selected_sim_index = selected_sim_display - 1
             selected_sim_index = min(max(0, st.session_state.selected_sim_index), max_sim_sel - 1)
+
             if num_completed_simulations == 0:
                 st.warning("No completed simulations available for audit.")
             else:
                 audit_sim = sim_results_completed_audit[selected_sim_index]
                 hold_period_audit = len(audit_sim.get("years", []))
+
                 if hold_period_audit <= 0:
-                    st.warning(f"Simulation {selected_sim_index+1} incomplete.")
+                    st.warning(f"Simulation {selected_sim_index+1} data is incomplete or has zero hold period.")
                 else:
+                    # --- Initial Setup Calculations (for this specific sim context) ---
                     purchase_price = inputs_used_for_run.purchase_price
                     loan_to_cost = inputs_used_for_run.loan_to_cost
-                    initial_loan_proceeds = purchase_price * loan_to_cost
+                    initial_loan_proceeds = purchase_price * loan_to_cost # Gross loan amount
                     initial_loan_costs = initial_loan_proceeds * inputs_used_for_run.initial_loan_costs_pct
-                    net_initial_loan_proceeds = initial_loan_proceeds - initial_loan_costs
-                    initial_equity = purchase_price - net_initial_loan_proceeds
+                    net_initial_loan_proceeds = initial_loan_proceeds - initial_loan_costs # Net proceeds after costs
+                    initial_equity = purchase_price - net_initial_loan_proceeds # Equity = Price - Net Proceeds
 
+                    # --- Refinancing Setup Calculations (for this specific sim context) ---
                     refi_year = inputs_used_for_run.refi_year if inputs_used_for_run.enable_refinancing else None
-                    # Calculate refinancing proceeds: new loan amount - costs
-                    refi_proceeds_net = 0.0
-                    if refi_year:
-                        noi_at_refi = audit_sim.get("noi", [0.0] * hold_period_audit)[refi_year - 1]
-                        refi_cap_rate = inputs_used_for_run.mean_exit_cap_rate / 100.0
-                        if noi_at_refi > 0 and refi_cap_rate > FLOAT_ATOL:
-                            property_value = noi_at_refi / refi_cap_rate
-                            new_loan_amount = property_value * inputs_used_for_run.refi_new_ltv
-                            refi_costs = new_loan_amount * inputs_used_for_run.refi_costs_pct_loan
-                            refi_proceeds_net = new_loan_amount - refi_costs
-                        else:
-                            logger.warning(f"Audit Sim {selected_sim_index+1}: Cannot calculate refinancing proceeds: NOI={noi_at_refi}, CapRate={refi_cap_rate}")
-                    # Loan payoff at refi is the loan balance at the start of the refi year
-                    refi_loan_payoff = audit_sim.get("loan_balance", [0.0] * hold_period_audit)[refi_year - 2] if refi_year and refi_year > 1 else 0.0
-
-                    net_sale_proceeds = audit_sim.get("exit_value_net", 0.0)
-                    final_loan_payoff = audit_sim.get("loan_balance", [0.0])[-1] if audit_sim.get("loan_balance") else 0.0
-
-                    # Initialize rows for Net Loan Proceeds and Loan Payoff
-                    net_loan_proceeds_row = [net_initial_loan_proceeds] + [0.0] * hold_period_audit
-                    loan_payoff_row = [0.0] * (hold_period_audit + 1)
-
-                    if refi_year:
-                        net_loan_proceeds_row[refi_year] = refi_proceeds_net
-                        loan_payoff_row[refi_year] = -refi_loan_payoff
-
-                    loan_payoff_row[-1] = -final_loan_payoff  # Final loan payoff at sale
-
-                    last_unlev_cf = audit_sim.get("unlevered_cf", [0.0])[-1] if audit_sim.get("unlevered_cf") else 0.0
-                    last_lev_cf = audit_sim.get("levered_cf", [0.0])[-1] if audit_sim.get("levered_cf") else 0.0
-                    final_unlev_cf = last_unlev_cf + net_sale_proceeds
-                    final_lev_cf = last_lev_cf + net_sale_proceeds - final_loan_payoff
-
                     total_years = hold_period_audit + 1
 
-                    def _pad_list(data_list: Optional[List[Any]], expected_len: int, pad_value: Any = np.nan) -> List[Any]:
-                        if data_list is None:
-                            return [pad_value] * expected_len
-                        base_list = list(data_list)
-                        actual_len = len(base_list)
-                        if actual_len == expected_len:
-                            return base_list
-                        elif actual_len < expected_len:
-                            return base_list + ([pad_value] * (expected_len - actual_len))
-                        else:
-                            return base_list[:expected_len]
+                    # Initialize specific loan event rows
+                    initial_proceeds_net_row = [net_initial_loan_proceeds] + [0.0] * hold_period_audit # <<< Use Net Proceeds
+                    refi_proceeds_net_row = [0.0] * total_years
+                    refi_payoff_row = [0.0] * total_years
+                    final_payoff_row = [0.0] * total_years
 
+                    # Calculate specific refi values for this sim
+                    sim_refi_proceeds_net = 0.0
+                    sim_refi_loan_payoff = 0.0
+                    if refi_year:
+                        sim_refi_proceeds_net_list = audit_sim.get("refi_proceeds_net", [0.0] * hold_period_audit)
+                        # sim_refi_costs_list = audit_sim.get("refi_costs", [0.0] * hold_period_audit) # Not needed directly
+                        sim_loan_balance_list = audit_sim.get("loan_balance", [0.0] * hold_period_audit)
+
+                        # Get refinancing proceeds NET OF COSTS for this sim
+                        if len(sim_refi_proceeds_net_list) >= refi_year:
+                            sim_refi_proceeds_net = sim_refi_proceeds_net_list[refi_year - 1]
+                            refi_proceeds_net_row[refi_year] = sim_refi_proceeds_net # <<< Use Net Proceeds
+                        else:
+                            logger.warning(f"Audit Sim {selected_sim_index+1}: Refi year {refi_year} out of bounds for proceeds list.")
+
+                        # Calculate refi loan payoff (payoff of original loan) for this sim
+                        if refi_year > 1 and len(sim_loan_balance_list) >= refi_year -1:
+                             sim_refi_loan_payoff = sim_loan_balance_list[refi_year - 2]
+                             refi_payoff_row[refi_year] = -sim_refi_loan_payoff # Negative sign
+                        elif refi_year == 1:
+                             sim_refi_loan_payoff = initial_loan_proceeds
+                             refi_payoff_row[refi_year] = -sim_refi_loan_payoff
+                        else:
+                             logger.warning(f"Audit Sim {selected_sim_index+1}: Cannot determine refi loan payoff for year {refi_year}.")
+
+                    # --- Exit Calculations (for this specific sim) ---
+                    net_sale_proceeds = audit_sim.get("exit_value_net", 0.0)
+                    # Final loan payoff for this sim
+                    final_loan_payoff = audit_sim.get("loan_balance", [0.0])[-1] if audit_sim.get("loan_balance") else 0.0
+                    final_payoff_row[-1] = -final_loan_payoff # Negative sign
+
+                    # --- Calculate Final Cash Flows for IRR Rows (for this specific sim) ---
+                    last_unlev_cf = audit_sim.get("unlevered_cf", [0.0])[-1] if audit_sim.get("unlevered_cf") else 0.0
+                    last_lev_cf = audit_sim.get("levered_cf", [0.0])[-1] if audit_sim.get("levered_cf") else 0.0
+                    final_unlev_cf_for_irr = last_unlev_cf + net_sale_proceeds
+                    final_lev_cf_for_irr = last_lev_cf + net_sale_proceeds - final_loan_payoff
+
+                    # --- Helper function for padding lists ---
+                    def _pad_list(data_list: Optional[List[Any]], expected_len: int, pad_value: Any = np.nan) -> List[Any]:
+                         if data_list is None: return [pad_value] * expected_len
+                         base_list = list(data_list) if isinstance(data_list, (list, tuple)) else [data_list]
+                         actual_len = len(base_list)
+                         if actual_len == expected_len: return base_list
+                         elif actual_len < expected_len: return base_list + ([pad_value] * (expected_len - actual_len))
+                         else: return base_list[:expected_len]
+
+                    # --- Calculate intermediate rows for the single simulation run ---
+                    sim_noi = _pad_list(audit_sim.get("noi"), hold_period_audit)
+                    sim_capex = _pad_list(audit_sim.get("capex"), hold_period_audit)
+                    sim_interest = _pad_list(audit_sim.get("interest"), hold_period_audit)
+                    sim_principal = _pad_list(audit_sim.get("principal"), hold_period_audit)
+
+                    cfbds_row_vals_sim = [ (n - c) if pd.notna(n) and pd.notna(c) else np.nan for n, c in zip(sim_noi, sim_capex) ]
+                    total_debt_service_vals_sim = [ -(abs(i) + abs(p)) if pd.notna(i) and pd.notna(p) else np.nan for i, p in zip(sim_interest, sim_principal) ]
+
+                    # --- Define Audit Table Rows (Revised Structure) ---
                     audit_rows = [
+                         # --- Unlevered Section ---
                         ("--- Unlevered Cash Flows ---", [np.nan] * total_years),
                         ("Purchase Price", [-purchase_price] + [np.nan] * hold_period_audit),
-                        ("--- Operations ---", [np.nan] * total_years),
                         ("Potential Gross Rent (PGR)", _pad_list([np.nan] + audit_sim.get("potential_rent", []), total_years)),
-                        ("Less: Vacancy Loss", _pad_list([np.nan] + [-abs(v) for v in audit_sim.get("vacancy_loss", [])], total_years)),
+                        ("Less: Vacancy Loss", _pad_list([np.nan] + [-abs(v) if pd.notna(v) else np.nan for v in audit_sim.get("vacancy_loss", [])], total_years)),
                         ("Effective Gross Rent (EGR)", _pad_list([np.nan] + audit_sim.get("egr", []), total_years)),
                         ("Plus: Other Income", _pad_list([np.nan] + audit_sim.get("other_income", []), total_years)),
                         ("Effective Gross Income (EGI)", _pad_list([np.nan] + audit_sim.get("egi", []), total_years)),
-                        ("Less: Operating Expenses", _pad_list([np.nan] + [-abs(e) for e in audit_sim.get("expenses", [])], total_years)),
-                        ("Net Operating Income (NOI)", _pad_list([np.nan] + audit_sim.get("noi", []), total_years)),
-                        ("Less: Capital Expenditures (CapEx)", _pad_list([np.nan] + [-abs(c) for c in audit_sim.get("capex", [])], total_years)),
-                        ("Unlevered Cash Flow (Op.)", _pad_list([np.nan] + audit_sim.get("unlevered_cf", []), total_years)),
-                        ("--- Levered Cash Flows ---", [np.nan] * total_years),
-                        ("Net Loan Proceeds", net_loan_proceeds_row),
-                        ("Loan Payoff", loan_payoff_row),
-                        ("Initial Equity", [-initial_equity] + [np.nan] * hold_period_audit),
-                        ("--- Debt Service ---", [np.nan] * total_years),
-                        ("Interest Paid", _pad_list([np.nan] + [-abs(i) for i in audit_sim.get("interest", [])], total_years)),
-                        ("Principal Paid", _pad_list([np.nan] + [-abs(p) for p in audit_sim.get("principal", [])], total_years)),
-                        ("Levered Cash Flow (Op.)", _pad_list([np.nan] + audit_sim.get("levered_cf", []), total_years)),
+                        ("Less: Operating Expenses", _pad_list([np.nan] + [-abs(e) if pd.notna(e) else np.nan for e in audit_sim.get("expenses", [])], total_years)),
+                        ("Net Operating Income (NOI)", _pad_list([np.nan] + sim_noi, total_years)),
+                        ("Less: Capital Expenditures (CapEx)", _pad_list([np.nan] + [-abs(c) if pd.notna(c) else np.nan for c in sim_capex], total_years)),
+                        ("Cash Flow Before Debt Service (CFBDS)", [np.nan] + cfbds_row_vals_sim), # Derived
+
+                        # --- Levered Section ---
+                        ("--- Levered Cash Flows & Debt ---", [np.nan] * total_years),
+                        ("Net Loan Proceeds", initial_proceeds_net_row), # <<< UPDATED ROW
+                        ("Net Refinancing Proceeds", refi_proceeds_net_row),   # <<< UPDATED ROW
+                        ("Loan Payoff", final_payoff_row),                   # <<< UPDATED ROW
+                        ("Interest Paid", _pad_list([np.nan] + [-abs(i) if pd.notna(i) else np.nan for i in sim_interest], total_years)), # Sign in label
+                        ("Principal Paid", _pad_list([np.nan] + [-abs(p) if pd.notna(p) else np.nan for p in sim_principal], total_years)), # Sign in label
+                        ("Total Debt Service", [np.nan] + total_debt_service_vals_sim), # Derived
+
+                        # --- Sale & IRR Section ---
                         ("--- Sale ---", [np.nan] * total_years),
                         ("Net Sale Proceeds", [np.nan] * hold_period_audit + [net_sale_proceeds]),
                         ("--- Cash Flows for IRR ---", [np.nan] * total_years),
-                        ("Unlevered Cash Flow (IRR)", _pad_list([-purchase_price] + audit_sim.get("unlevered_cf", [])[:-1] + [final_unlev_cf], total_years)),
-                        ("Levered Cash Flow (IRR)", _pad_list([-initial_equity] + audit_sim.get("levered_cf", [])[:-1] + [final_lev_cf], total_years)),
+                        ("Unlevered Cash Flow (IRR)", _pad_list([-purchase_price] + audit_sim.get("unlevered_cf", [])[:-1] + [final_unlev_cf_for_irr], total_years)),
+                        ("Levered Cash Flow (IRR)", _pad_list([-initial_equity] + audit_sim.get("levered_cf", [])[:-1] + [final_lev_cf_for_irr], total_years)),
+
+                        # --- Other Info ---
                         ("--- Other Info ---", [np.nan] * total_years),
-                        ("End of Year Loan Balance", _pad_list([net_initial_loan_proceeds] + audit_sim.get("loan_balance", []), total_years))
+                        # <<< UPDATED: Shows GROSS initial loan in Yr 0, then EOY balances >>>
+                        ("End of Year Loan Balance", _pad_list([initial_loan_proceeds] + audit_sim.get("loan_balance", []), total_years))
                     ]
 
+                    # --- DataFrame Creation and Formatting ---
                     clean_rows = [
                         (label, vals if isinstance(vals, list) and len(vals) == total_years else [np.nan] * total_years)
                         for label, vals in audit_rows
                     ]
-
                     audit_df = pd.DataFrame.from_dict(
                         {label: vals for label, vals in clean_rows},
                         orient="index",
                         columns=[f"Year {i}" for i in range(total_years)]
                     )
-
-                    def fmt_audit(val):
-                        if pd.isna(val):
-                            return "-"
+                    def fmt_audit(val): # Keep formatting function
+                        if pd.isna(val): return "-"
                         try:
                             num_val = float(val)
-                            if abs(num_val) >= 1:
-                                return f"$({abs(num_val):,.0f})" if num_val < 0 else f"${num_val:,.0f}"
-                            elif abs(num_val) > 1e-3:
-                                return f"$({abs(num_val):,.2f})" if num_val < 0 else f"${num_val:,.2f}"
-                            else:
-                                return "$0"
-                        except (TypeError, ValueError):
-                            return str(val)
-
+                            if abs(num_val) < 1e-3: return "$0"
+                            fmt_str = "${:,.0f}" if abs(num_val) >= 1 else "${:,.2f}"
+                            # Use parentheses for negative financial values
+                            return fmt_str.format(num_val) if num_val >= 0 else f"({fmt_str.format(abs(num_val))})"
+                        except (TypeError, ValueError): return str(val)
                     st.dataframe(
                         audit_df.style.format(fmt_audit, na_rep="-")
                         .set_properties(**{"text-align": "right"})
@@ -898,16 +929,15 @@ def main():
                         use_container_width=True
                     )
 
-                    # Download button
+                    # --- Download Button ---
                     st.download_button(
-                        label=f"Download Sim {selected_sim_index+1} Data (CSV)",
+                        label=f"Download Sim #{selected_sim_index+1} Data (CSV)",
                         data=audit_df.to_csv().encode('utf-8'),
                         file_name=f"simulation_{selected_sim_index+1}_audit.csv",
-                        mime="text/csv",
-                        key=f"download_audit_{selected_sim_index}"
+                        mime="text/csv", key=f"download_audit_{selected_sim_index}"
                     )
 
-                    # IRR Metrics
+                    # --- IRR Metrics (for this specific sim) ---
                     st.markdown("##### IRR for Selected Simulation")
                     unlevered_irr_val = audit_sim.get('unlevered_irr', np.nan)
                     levered_irr_val = audit_sim.get('levered_irr', np.nan)
@@ -915,51 +945,42 @@ def main():
                     col1.metric("Unlevered IRR", f"{unlevered_irr_val:.1%}" if np.isfinite(unlevered_irr_val) else "N/A")
                     col2.metric("Levered IRR", f"{levered_irr_val:.1%}" if np.isfinite(levered_irr_val) else "N/A")
 
-                    # Key Assumptions Table
+                    # --- Key Assumptions Table (for this specific sim) ---
                     st.markdown("---")
                     st.subheader("Key Assumptions & Metrics (Simulation #{})".format(selected_sim_index + 1))
+                    # ... (Keep existing assumptions table logic for the audit tab) ...
                     exit_cap_rate = audit_sim.get("sim_exit_cap_rate", np.nan)
-                    assumption_rows = [
-                        ("Market Rent ($/Unit/Mo)", audit_sim.get("rent_per_unit", [])),
-                        ("Vacancy Rate (%)", audit_sim.get("vacancy_rate", [])),
-                        ("Rent Growth (%)", audit_sim.get("rent_growth_pct", [])),
-                        ("Expense Growth (%)", audit_sim.get("expense_growth_pct", [])),
-                        ("CapEx Growth (%)", audit_sim.get("capex_growth_pct", [])),
-                        ("Interest Rate (%)", audit_sim.get("interest_rates", []))
-                    ]
+                    assumption_rows_data = { # Use dict for easier access
+                         "Market Rent ($/Unit/Mo)": audit_sim.get("rent_per_unit", []),
+                         "Vacancy Rate (%)": audit_sim.get("vacancy_rate", []),
+                         "Rent Growth (%)": audit_sim.get("rent_growth_pct", []),
+                         "Expense Growth (%)": audit_sim.get("expense_growth_pct", []),
+                         "CapEx Growth (%)": audit_sim.get("capex_growth_pct", []),
+                         ("Interest Rate (%)" if not inputs_used_for_run.is_variable_rate else "Effective Interest Rate (%)"): audit_sim.get("interest_rates", []) # Dynamic label
+                    }
+                    assumption_rows = [(label, _pad_list(data, hold_period_audit)) for label, data in assumption_rows_data.items()] # Ensure padding
                     if np.isfinite(exit_cap_rate):
-                        cap_rate_row = [np.nan] * (hold_period_audit - 1) + [exit_cap_rate]
-                        assumption_rows.append(("Exit Cap Rate (%)", cap_rate_row))
-                    clean_assumptions = [
-                        (label, vals) for label, vals in assumption_rows
-                        if isinstance(vals, list) and len(vals) == hold_period_audit
-                    ]
+                         cap_rate_row = [np.nan] * (hold_period_audit - 1) + [exit_cap_rate]
+                         assumption_rows.append(("Exit Cap Rate (%)", cap_rate_row))
+                    clean_assumptions = [(label, vals) for label, vals in assumption_rows if isinstance(vals, list) and len(vals) == hold_period_audit]
                     if clean_assumptions:
-                        assumption_df = pd.DataFrame({label: vals for label, vals in clean_assumptions}).T
-                        assumption_df.columns = [f"Yr {i+1}" for i in range(hold_period_audit)]
-                        assumption_df.index.name = "Assumption"
-                        def format_assumption_value(val, label):
-                            if pd.isna(val):
-                                return "-"
-                            if "Rent ($/Unit/Mo)" in label:
-                                return f"${val:,.0f}"
-                            elif "Rate (%)" in label:
-                                return f"{val:.1%}" if isinstance(val, float) else f"{val:.1f}%"
-                            elif "Growth (%)" in label:
-                                return f"{val:.1f}%"
-                            else:
-                                return f"{val:.2f}"
-                        formatted_df = assumption_df.apply(
-                            lambda row: pd.Series([format_assumption_value(val, row.name) for val in row], index=row.index),
-                            axis=1
-                        )
-                        st.dataframe(
-                            formatted_df.style.set_properties(**{"text-align": "right"})
-                            .set_table_styles([{"selector": "th", "props": [("text-align", "left")]}]),
-                            use_container_width=True
-                        )
-                    else:
-                        st.warning("Could not calculate key assumptions for this simulation.")
+                         assumption_df = pd.DataFrame({label: vals for label, vals in clean_assumptions}).T
+                         assumption_df.columns = [f"Yr {i+1}" for i in range(hold_period_audit)]
+                         assumption_df.index.name = "Assumption"
+                         def format_assumption_value(val, label): # Keep formatting function
+                              if pd.isna(val): return "-"
+                              try:
+                                   f_val = float(val)
+                                   if "Rent ($/Unit/Mo)" in label: return f"${f_val:,.0f}"
+                                   elif "Rate (%)" in label and "Growth" not in label and "Cap" not in label: return f"{f_val:.1%}"
+                                   elif "Vacancy Rate (%)" in label : return f"{f_val*100:.1f}%"
+                                   elif "%" in label: return f"{f_val:.1f}%"
+                                   else: return f"{f_val:.2f}"
+                              except (ValueError, TypeError): return str(val)
+                         formatted_df = assumption_df.apply(lambda row: pd.Series([format_assumption_value(val, row.name) for val in row], index=row.index), axis=1)
+                         st.dataframe(formatted_df.style.set_properties(**{"text-align": "right"}).set_table_styles([{"selector": "th", "props": [("text-align", "left")]}]), use_container_width=True)
+                    else: st.warning("Could not display key assumptions for this simulation.")
+
         with tabs[tab_keys.index("🚪 Exit")]:
             # Display Exit analysis plots (logic seems mostly self-contained)
             st.subheader("Exit Analysis")
