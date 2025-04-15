@@ -213,30 +213,44 @@ def main():
         st.session_state["processed_results"] = None
         processed_results = None
 
-        # Check validity flag from object creation attempt
+        inputs_valid_for_sim = True  # Assume valid until checks fail
+
+        # Check initial object validity
         if sim_inputs_obj and inputs_valid_for_snapshot:
             sim_inputs_to_run = sim_inputs_obj
             num_sims_run = sim_inputs_to_run.num_simulations
-            inputs_valid_for_sim = True
             logger.info("Using pre-validated SimulationInputs object for simulation run.")
         else:
-            if not inputs_valid_for_snapshot: st.error("Cannot run simulation due to input configuration errors identified earlier.")
-            else: st.error("Cannot run simulation: Input object not available.") # Should be caught by above
-            logger.error("Simulation run aborted because SimulationInputs object creation failed or object unavailable.")
+            st.error("Cannot run simulation: Input configuration errors identified earlier.")
+            logger.error("Simulation run aborted due to invalid input object creation.")
             inputs_valid_for_sim = False
 
+        # Ensure data loaded correctly
         if not data_loaded_ok:
             st.error("Cannot run simulation: Forward curve data failed to load.")
             inputs_valid_for_sim = False
 
-        # --- <<< ADDED VALIDATION CHECK >>> ---
-        # Add specific logical checks before running
-        if inputs_valid_for_sim and sim_inputs_to_run.enable_refinancing:
-             if sim_inputs_to_run.refi_year > sim_inputs_to_run.hold_period:
-                  st.error(f"Input Error: Refinance Year ({sim_inputs_to_run.refi_year}) cannot be greater than Hold Period ({sim_inputs_to_run.hold_period}).")
-                  inputs_valid_for_sim = False # Prevent running
+        # --- Begin explicit logical validation checks ---
+        validation_errors = []
 
-        # Add other logical validations here if needed
+        if inputs_valid_for_sim:
+            # Refinancing year must not exceed hold period
+            if sim_inputs_to_run.enable_refinancing:
+                if sim_inputs_to_run.refi_year > sim_inputs_to_run.hold_period:
+                    validation_errors.append(
+                        f"Refinance Year ({sim_inputs_to_run.refi_year}) cannot exceed Hold Period ({sim_inputs_to_run.hold_period})."
+                    )
+
+            # Additional validation checks can be added here as needed
+
+        # If any validation errors, show them and don't run simulation
+        if validation_errors:
+            for error_msg in validation_errors:
+                st.error(f"Input Error: {error_msg}")
+                logger.warning(f"Validation failed: {error_msg}")
+            inputs_valid_for_sim = False
+
+        # --- End of validation checks ---
 
         if inputs_valid_for_sim:
             with st.spinner(f"Running {num_sims_run} simulations..."):
@@ -248,47 +262,15 @@ def main():
                 )
             if mc_results is None or 'error' in mc_results:
                 error_message = mc_results.get('error', 'Unknown simulation error.') if mc_results else 'Critical error.'
-                st.error(f"Simulation Error: {error_message}"); logger.error(f"Sim execution failed: {error_message}")
+                st.error(f"Simulation Error: {error_message}")
+                logger.error(f"Simulation execution failed: {error_message}")
                 st.session_state["processed_results"] = None
             else:
-                st.session_state["processed_results"] = mc_results; logger.info("Simulation finished successfully.")
-            st.rerun() # Rerun to display results or errors
+                st.session_state["processed_results"] = mc_results
+                logger.info("Simulation finished successfully.")
+            st.rerun()  # Rerun to display updated results or errors
         else:
             st.warning("Simulation not run due to input errors or missing data.")
-
-
-    # --- Display Results ---
-    st.markdown("---")
-
-    if processed_results and "error" in processed_results:
-        st.error(f"Simulation Error: {processed_results['error']}")
-    elif processed_results is None:
-        # Only show info message if no results and inputs were valid enough to try
-        if inputs_valid_for_snapshot:
-             st.info("Adjust inputs in the sidebar and click 'Run Simulation' to see results.")
-        # If inputs weren't even valid for snapshot, error is already shown above
-
-    elif processed_results: # Simulation HAS run, display full results
-        try:
-             # Recreate object based on current state, which should match the run state
-             inputs_used_for_run = SimulationInputs(**st.session_state['inputs'])
-             inputs_valid_for_display = True
-        except Exception as e:
-             st.error(f"Error recreating inputs object for display: {e}")
-             inputs_valid_for_display = False
-             inputs_used_for_run = None
-
-        # Unpack results
-        metrics = processed_results.get("metrics", {})
-        risk_metrics = processed_results.get("risk_metrics", {})
-        plot_data = processed_results.get("plot_data", {})
-        avg_cash_flow_data = plot_data.get("avg_cash_flows", {})
-        scatter_plot_data = plot_data.get("scatter_plot", {})
-        finite_unlevered = processed_results.get("finite_unlevered_irrs", [])
-        finite_levered = processed_results.get("finite_levered_irrs", [])
-        finite_exit_values = processed_results.get("finite_exit_values", [])
-        finite_exit_caps = processed_results.get("finite_exit_caps", [])
-        sim_results_completed_audit = processed_results.get("raw_results_for_audit", [])
 
         # Define tabs
         tab_keys = ["📊 Summary", "📈 IRR", "💰 Pro-Forma", "📉 Dynamics", "🛡️ Risk", "🔍 Audit", "🚪 Exit", "🔎 Sensitivity", "🗂️ Scenarios", "ℹ️ Guide"]
