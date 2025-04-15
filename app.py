@@ -10,6 +10,10 @@ MODIFIED: Fixed NameError in Initial State Snapshot by creating
 CORRECTED: Removed non-breaking space causing SyntaxError near main().
 CORRECTED: Used 'inputs_used_for_run' in snapshot display after results exist.
 MODIFIED: Removed Initial State Snapshot display when no results exist yet.
+CORRECTED: Fixed UnboundLocalError in scenario comparison histogram plot.
+MODIFIED: Changed scenario comparison plot to be stacked vertically with shared x-axis.
+CORRECTED: Fixed TypeError in snapshot calculate_debt_service call signature.
+CORRECTED: Input processing loop made more robust to prevent potential double conversion.
 """
 
 import streamlit as st
@@ -34,10 +38,9 @@ try:
     from propsaber.core.inputs import SimulationInputs
     from propsaber.core.constants import (
         FLOAT_ATOL, FLOAT_RTOL, DEFAULT_NUM_SIMULATIONS, DEFAULT_HOLD_PERIOD,
-        FORWARD_CURVE_PATH, LOAN_TYPE_IO, LOAN_TYPE_AMORT, MONTHS_PER_YEAR # Added missing constants
+        FORWARD_CURVE_PATH, LOAN_TYPE_IO, LOAN_TYPE_AMORT, MONTHS_PER_YEAR
     )
     from propsaber.core.simulation import run_monte_carlo
-    # Import the CORRECTED calculate_debt_service
     from propsaber.core.debt import calculate_debt_service
     from propsaber.core.utils import convert_to_internal, get_valid_paths
     from propsaber.ui.inputs import render_sidebar_inputs
@@ -52,7 +55,7 @@ try:
     )
 except ImportError as e:
     st.error(f"Failed to import PropSaber modules. Ensure the 'propsaber' package is structured correctly. Error: {e}")
-    st.stop() # Stop execution if core modules can't be imported
+    st.stop()
 
 
 # --- Page Configuration ---
@@ -90,6 +93,7 @@ def main():
     with st.sidebar:
         run_sim_button = st.button("🚀 Run Simulation", key="run_sim_button", type="primary", use_container_width=True)
         st.markdown("---")
+        # This function renders widgets which might update st.session_state immediately via their keys
         render_sidebar_inputs(
             initial_inputs=SimulationInputs(**st.session_state["inputs"]),
             forward_curve=forward_curve_data,
@@ -100,7 +104,7 @@ def main():
         st.subheader("💾 Scenario Files")
         save_name = st.text_input("New Scenario File Name", value="my_scenario", key="save_scenario_name_sidebar", help="Enter name to save CURRENT sidebar inputs to a file.")
         if st.button("Save Inputs to File", key="save_button_sidebar"):
-            if save_name: save_scenario(st.session_state["inputs"], filename=f"{save_name}.json")
+            if save_name: save_scenario(st.session_state["inputs"], filename=f"{save_name}.json") # Save processed state
             else: st.warning("Please enter a file name.")
         st.markdown("---")
         try: scenario_files = list_saved_scenarios()
@@ -133,16 +137,33 @@ def main():
     percentage_decimal_keys = {"market_rent_deviation_pct", "transition_normal_to_recession", "transition_recession_to_normal", "current_vacancy", "stabilized_vacancy", "vacancy_volatility", "loan_to_cost", "interest_rate", "transaction_cost_pct", "risk_free_rate", "hurdle_rate", "sofr_spread", "sofr_floor", "initial_loan_costs_pct", "refi_new_ltv", "refi_costs_pct_loan"}
     percentage_direct_keys = {"normal_growth_mean", "normal_growth_vol", "recession_growth_mean", "recession_growth_vol", "mean_other_income_growth", "other_income_stddev", "mean_expense_growth", "expense_stddev", "mean_capex_growth", "capex_stddev", "mean_exit_cap_rate", "exit_cap_rate_stddev", "refi_fixed_rate_spread_to_sofr"}
     all_input_keys = {k for k in SimulationInputs.__annotations__ if not k.startswith('_') and not isinstance(getattr(SimulationInputs, k, None), property)}
+
     for key in all_input_keys: # Process inputs from widgets/state
         widget_key = f"input_{key}"; default_value = getattr(default_inputs_instance, key, None); default_type = type(default_value) if default_value is not None else None
-        ui_value = st.session_state.get(widget_key, st.session_state.get("inputs", {}).get(key, default_value))
+
+        # --- <<< CHANGE START: More robust ui_value retrieval >>> ---
+        # Prioritize direct widget state if it exists, otherwise use current processed state (or default if none)
+        if widget_key in st.session_state:
+            ui_value = st.session_state[widget_key]
+            # logger.debug(f"Processing key '{key}': Found value in widget state ('{widget_key}'): {ui_value}")
+        else:
+            # Fallback to existing processed value or default if widget hasn't rendered yet
+            ui_value = st.session_state.get("inputs", {}).get(key, default_value)
+            # logger.debug(f"Processing key '{key}': Using value from existing state/default: {ui_value}")
+        # --- <<< CHANGE END >>> ---
+
+        # Handle special cases derived from other inputs
         if key == 'is_variable_rate': processed_inputs_dict[key] = (st.session_state.get("input_rate_type", "Fixed") == "Floating"); continue
         if key == 'loan_type':
-            if processed_inputs_dict.get('is_variable_rate', False): processed_inputs_dict[key] = LOAN_TYPE_IO
+            # Use already processed 'is_variable_rate' if available in this pass, else check widget state
+            is_float = processed_inputs_dict.get('is_variable_rate', (st.session_state.get("input_rate_type", "Fixed") == "Floating"))
+            if is_float: processed_inputs_dict[key] = LOAN_TYPE_IO
             else: processed_inputs_dict[key] = st.session_state.get("input_loan_type", default_inputs_instance.loan_type)
             continue
         if ui_value is None: processed_inputs_dict[key] = default_value; continue
-        try: # Convert to internal types
+
+        # Convert UI value to internal format
+        try:
             if key in percentage_decimal_keys: processed_inputs_dict[key] = convert_to_internal(ui_value, True)
             elif key in percentage_direct_keys: processed_inputs_dict[key] = convert_to_internal(ui_value, False)
             elif default_type == int: processed_inputs_dict[key] = int(round(float(ui_value)))
@@ -152,7 +173,19 @@ def main():
                  else: processed_inputs_dict[key] = bool(ui_value)
             else: processed_inputs_dict[key] = ui_value
         except Exception as e: logger.error(f"Error processing input key '{key}': {e}"); processed_inputs_dict[key] = default_value; inputs_valid_for_processing = False
-    current_session_inputs_dict = st.session_state.get("inputs", {}) # Update session state if needed
+    processed_inputs_dict["refi_new_ltv"] = st.session_state.get(
+        "input_refi_new_ltv",
+        default_inputs_instance.refi_new_ltv * 100.0  # fallback to default and convert to percentage first
+    ) / 100.0
+
+    processed_inputs_dict["refi_costs_pct_loan"] = st.session_state.get(
+        "input_refi_costs_pct_loan",
+        default_inputs_instance.refi_costs_pct_loan * 100.0  # fallback to default percentage
+    ) / 100.0
+
+
+    # --- Update session state only if necessary ---
+    current_session_inputs_dict = st.session_state.get("inputs", {})
     if not all(np.isclose(processed_inputs_dict.get(k, np.nan), current_session_inputs_dict.get(k, np.nan), rtol=FLOAT_RTOL, atol=FLOAT_ATOL, equal_nan=True) if isinstance(processed_inputs_dict.get(k), float) else processed_inputs_dict.get(k) == current_session_inputs_dict.get(k) for k in all_input_keys):
          logger.info("Processed inputs differ from session state. Updating st.session_state['inputs'].")
          st.session_state["inputs"] = processed_inputs_dict.copy()
@@ -160,43 +193,17 @@ def main():
 
     # --- Create SimulationInputs Object ---
     sim_inputs_obj: Optional[SimulationInputs] = None
-    inputs_valid_for_snapshot = False # Renamed flag for clarity
+    inputs_valid_for_snapshot = False # Flag specifically for snapshot validity
     try:
         sim_inputs_obj = SimulationInputs(**st.session_state["inputs"])
-        inputs_valid_for_snapshot = True # Mark as valid if object creation succeeds
+        inputs_valid_for_snapshot = True
         logger.info("Successfully created SimulationInputs object from session state.")
     except Exception as e:
-        st.error(f"Input Configuration Error: {e}. Please check sidebar inputs.")
+        # Display error prominently if object creation fails
+        st.error(f"Input Configuration Error: {e}. Cannot proceed. Please check sidebar inputs.")
         logger.error(f"Failed to create SimulationInputs object from session state: {e}", exc_info=True)
-        # inputs_valid_for_snapshot remains False
+        # Keep inputs_valid_for_snapshot as False
 
-
-    # --- Simulation Execution ---
-    processed_results = st.session_state.get("processed_results")
-
-    if run_sim_button:
-        logger.info("Run Simulation button clicked.")  
-        st.session_state["processed_results"] = None
-        processed_results = None
-
-        # Use the sim_inputs_obj created earlier, check if it's valid
-        if sim_inputs_obj and inputs_valid_for_snapshot:
-            sim_inputs_to_run = sim_inputs_obj
-            num_sims_run = sim_inputs_to_run.num_simulations
-            inputs_valid_for_sim = True
-            logger.info("Using pre-validated SimulationInputs object for simulation run.")
-        else:
-            # Use the flag set during object creation attempt
-            if not inputs_valid_for_snapshot:
-                 st.error("Cannot run simulation due to input configuration errors identified earlier.")
-            else: # Should not happen if logic above is correct, but as safety
-                 st.error("Cannot run simulation: Input object not available.")
-            logger.error("Simulation run aborted because SimulationInputs object creation failed or object unavailable.")
-            inputs_valid_for_sim = False
-
-        if not data_loaded_ok:
-            st.error("Cannot run simulation: Forward curve data failed to load.")
-            inputs_valid_for_sim = False
 
     # --- Simulation Execution ---
     processed_results = st.session_state.get("processed_results")
@@ -206,24 +213,30 @@ def main():
         st.session_state["processed_results"] = None
         processed_results = None
 
-        # Use the sim_inputs_obj created earlier, check if it's valid
+        # Check validity flag from object creation attempt
         if sim_inputs_obj and inputs_valid_for_snapshot:
             sim_inputs_to_run = sim_inputs_obj
             num_sims_run = sim_inputs_to_run.num_simulations
             inputs_valid_for_sim = True
             logger.info("Using pre-validated SimulationInputs object for simulation run.")
         else:
-            # Use the flag set during object creation attempt
-            if not inputs_valid_for_snapshot:
-                st.error("Cannot run simulation due to input configuration errors identified earlier.")
-            else: # Should not happen if logic above is correct, but as safety
-                st.error("Cannot run simulation: Input object not available.")
+            if not inputs_valid_for_snapshot: st.error("Cannot run simulation due to input configuration errors identified earlier.")
+            else: st.error("Cannot run simulation: Input object not available.") # Should be caught by above
             logger.error("Simulation run aborted because SimulationInputs object creation failed or object unavailable.")
             inputs_valid_for_sim = False
 
         if not data_loaded_ok:
             st.error("Cannot run simulation: Forward curve data failed to load.")
             inputs_valid_for_sim = False
+
+        # --- <<< ADDED VALIDATION CHECK >>> ---
+        # Add specific logical checks before running
+        if inputs_valid_for_sim and sim_inputs_to_run.enable_refinancing:
+             if sim_inputs_to_run.refi_year > sim_inputs_to_run.hold_period:
+                  st.error(f"Input Error: Refinance Year ({sim_inputs_to_run.refi_year}) cannot be greater than Hold Period ({sim_inputs_to_run.hold_period}).")
+                  inputs_valid_for_sim = False # Prevent running
+
+        # Add other logical validations here if needed
 
         if inputs_valid_for_sim:
             with st.spinner(f"Running {num_sims_run} simulations..."):
@@ -238,23 +251,11 @@ def main():
                 st.error(f"Simulation Error: {error_message}"); logger.error(f"Sim execution failed: {error_message}")
                 st.session_state["processed_results"] = None
             else:
-                st.session_state["processed_results"] = mc_results
-                logger.info("Simulation finished successfully.")
-                # Log cash flows once, with a check to avoid duplicates
-                results_hash = hash(str(mc_results))
-                if st.session_state.get("last_logged_results", 0) != results_hash:
-                    try:
-                        avg_unlev_stream = mc_results.get("avg_cash_flows", {}).get("unlevered_cf", [])
-                        avg_lev_stream = mc_results.get("avg_cash_flows", {}).get("levered_cf", [])
-                        if avg_unlev_stream and avg_lev_stream:
-                            logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream}")
-                            logger.info(f"Levered Cash Flow Stream: {avg_lev_stream}")
-                            st.session_state["last_logged_results"] = results_hash
-                    except Exception as e:
-                        logger.error(f"Error logging cash flows: {e}")
-            st.rerun()
+                st.session_state["processed_results"] = mc_results; logger.info("Simulation finished successfully.")
+            st.rerun() # Rerun to display results or errors
         else:
             st.warning("Simulation not run due to input errors or missing data.")
+
 
     # --- Display Results ---
     st.markdown("---")
@@ -262,14 +263,14 @@ def main():
     if processed_results and "error" in processed_results:
         st.error(f"Simulation Error: {processed_results['error']}")
     elif processed_results is None:
-        # --- Display initial message BEFORE results exist ---
-        # <<< CHANGE START >>>
-        # Removed the Initial State Snapshot display from here
-        st.info("Adjust inputs in the sidebar and click 'Run Simulation' to see results.")
-        # <<< CHANGE END >>>
+        # Only show info message if no results and inputs were valid enough to try
+        if inputs_valid_for_snapshot:
+             st.info("Adjust inputs in the sidebar and click 'Run Simulation' to see results.")
+        # If inputs weren't even valid for snapshot, error is already shown above
 
     elif processed_results: # Simulation HAS run, display full results
         try:
+             # Recreate object based on current state, which should match the run state
              inputs_used_for_run = SimulationInputs(**st.session_state['inputs'])
              inputs_valid_for_display = True
         except Exception as e:
@@ -329,26 +330,40 @@ def main():
                     capex_yr1 = inputs_used_for_run.initial_capex; unlevered_cf_yr1_approx = net_operating_income - capex_yr1
                     loan_amount_val = inputs_used_for_run.loan_amount
 
+                    # --- <<< CORRECTED CALL >>> ---
                     interest_yr1, principal_yr1, _, effective_rate_yr1, _ = calculate_debt_service(
-                        current_loan_type=inputs_used_for_run.loan_type, current_interest_rate=inputs_used_for_run.interest_rate,
-                        current_is_variable_rate=inputs_used_for_run.is_variable_rate, current_balance=loan_amount_val,
-                        monthly_payment=initial_monthly_payment_snapshot, year=1, sofr_spread=inputs_used_for_run.sofr_spread,
-                        forward_curve=forward_curve_data, std_dev_curve=std_dev_curve_data, sofr_floor=inputs_used_for_run.sofr_floor,
-                        rate_persistence_phi=inputs_used_for_run.rate_persistence_phi, volatility_scalar=inputs_used_for_run.volatility_scalar,
+                        current_loan_type=inputs_used_for_run.loan_type,
+                        current_interest_rate=inputs_used_for_run.interest_rate,
+                        current_is_variable_rate=inputs_used_for_run.is_variable_rate,
+                        current_balance=loan_amount_val,
+                        monthly_payment=initial_monthly_payment_snapshot, # Pass calculated payment
+                        year=1,
+                        # Pass remaining args required by debt.py's function signature
+                        sofr_spread=inputs_used_for_run.sofr_spread,
+                        forward_curve=forward_curve_data,
+                        std_dev_curve=std_dev_curve_data,
+                        sofr_floor=inputs_used_for_run.sofr_floor,
+                        rate_persistence_phi=inputs_used_for_run.rate_persistence_phi,
+                        volatility_scalar=inputs_used_for_run.volatility_scalar,
                         prev_volatile_sofr_comp=None
+                        # Removed incorrect/unnecessary args: current_loan_amount, current_loan_term_yrs
                     )
+                    # --- <<< END CORRECTED CALL >>> ---
+
                     if not np.isfinite(interest_yr1): interest_yr1 = 0.0;
                     if not np.isfinite(principal_yr1): principal_yr1 = 0.0
                     total_debt_service_yr1 = interest_yr1 + principal_yr1; levered_cf_yr1_approx = unlevered_cf_yr1_approx - total_debt_service_yr1
                     initial_equity = inputs_used_for_run.initial_equity; levered_cash_yield = levered_cf_yr1_approx / initial_equity if initial_equity > FLOAT_ATOL else np.nan
 
                     col_is1, col_is2 = st.columns(2)
+                    # (Display metrics code remains the same)
                     with col_is1: st.metric("Purchase Price", f"${inputs_used_for_run.purchase_price:,.0f}"); st.metric("Potential Gross Rent (PGR)", f"${potential_gross_rent:,.0f}"); st.metric(f"Less: Vacancy ({inputs_used_for_run.current_vacancy:.1%})", f"(${vacancy_amount:,.0f})"); st.metric("Effective Gross Rent (EGR)", f"${effective_gross_rent:,.0f}"); st.metric("Plus: Other Income", f"${other_income_val:,.0f}"); st.metric("Effective Gross Income (EGI)", f"${effective_gross_income:,.0f}"); st.metric("Less: Operating Expenses", f"(${op_ex:,.0f})"); st.metric("Net Operating Income (NOI)", f"${net_operating_income:,.0f}"); st.metric("Initial Going-In Cap Rate", f"{initial_cap_rate:.2%}" if np.isfinite(initial_cap_rate) else "N/A")
                     with col_is2: st.metric("Less: CapEx (Yr 1 Est.)", f"(${capex_yr1:,.0f})"); st.metric("Unlevered CF (Yr 1 Est.)", f"${unlevered_cf_yr1_approx:,.0f}"); st.markdown("---"); st.metric(f"Loan Amount ({inputs_used_for_run.loan_to_cost:.0%})", f"${loan_amount_val:,.0f}"); st.metric("Initial Equity", f"${initial_equity:,.0f}"); st.metric(f"Interest Rate (Yr 1)", f"{effective_rate_yr1:.2%}" if np.isfinite(effective_rate_yr1) else "N/A"); st.metric("Less: Debt Service (Yr 1 Est.)", f"(${total_debt_service_yr1:,.0f})"); st.metric("Levered CF (Yr 1 Est.)", f"${levered_cf_yr1_approx:,.0f}"); st.metric("Levered Cash Yield (Yr 1 Est.)", f"{levered_cash_yield:.1%}" if np.isfinite(levered_cash_yield) else "N/A")
                 except Exception as e:
                     st.error(f"Error calculating Initial State Snapshot: {e}"); logger.error(f"Initial State Calc Error after run: {e}", exc_info=True)
             else:
                  st.warning("Cannot display Initial State Snapshot as input object could not be recreated.")
+
 
         # --- Other Tabs (IRR, Pro-Forma, Dynamics, Risk, Audit, Exit, Sensitivity, Scenarios, Guide) ---
         with tabs[tab_keys.index("📈 IRR")]:
@@ -513,9 +528,9 @@ def main():
                 try:
                     avg_unlev_stream_vals = proforma_df.loc["Unlevered Cash Flow (IRR)"].astype(float).tolist()
                     avg_lev_stream_vals = proforma_df.loc["Levered Cash Flow (IRR)"].astype(float).tolist()
-                    # Remove logging to prevent duplicates; logged at simulation execution
-                    # logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream_vals}")
-                    # logger.info(f"Levered Cash Flow Stream: {avg_lev_stream_vals}")
+                    # Debug: Log the streams
+                    logger.info(f"Unlevered Cash Flow Stream: {avg_unlev_stream_vals}")
+                    logger.info(f"Levered Cash Flow Stream: {avg_lev_stream_vals}")
                     # Check if streams are valid for IRR
                     if len(avg_unlev_stream_vals) >= 2 and all(np.isfinite(avg_unlev_stream_vals)) and any(x < 0 for x in avg_unlev_stream_vals) and any(x > 0 for x in avg_unlev_stream_vals):
                         avg_unlev_irr = npf.irr(avg_unlev_stream_vals)
@@ -1105,6 +1120,7 @@ def main():
                         csv_df = pd.DataFrame(all_sensitivity_results); csv_bytes = csv_df.to_csv(index=False).encode('utf-8')
                         st.download_button(label="📥 Download Full Sensitivity Results as CSV", data=csv_bytes, file_name="sensitivity_analysis_results.csv", mime="text/csv")
 
+
         with tabs[tab_keys.index("🗂️ Scenarios")]:
             # Scenario comparison logic (seems mostly self-contained)
             st.subheader("Scenario Management & Comparison")
@@ -1157,9 +1173,8 @@ def main():
                               try:
                                   for key in metric_key_path: val_a = val_a.get(key, {})
                                   for key in metric_key_path: val_b = val_b.get(key, {})
-                                  val_a = val_a if isinstance(val_a, (int, float, np.number)) else None
-                                  val_b = val_b if isinstance(val_b, (int, float, np.number)) else None
-                                  delta = None
+                                  val_a = val_a if isinstance(val_a, (int, float, np.number)) else None; val_b = val_b if isinstance(val_b, (int, float, np.number)) else None
+                                  delta = None;
                                   if val_a is not None and val_b is not None and np.isfinite(val_a) and np.isfinite(val_b): delta = val_b - val_a
                                   return val_a, val_b, delta
                               except Exception as e: logger.error(f"Error get_metric_delta {metric_key_path}: {e}"); return None, None, None
@@ -1269,88 +1284,89 @@ def main():
                                        st.warning("Cannot generate comparison histogram: IRR range too narrow.")
                  elif scenario_a == scenario_b: st.warning("Please select two different scenarios to compare.")
 
-            with tabs[tab_keys.index("ℹ️ Guide")]:
-                st.markdown("""
-                    ## Overview & Instructions
+        # --- <<< CORRECTED INDENTATION >>> ---
+        with tabs[tab_keys.index("ℹ️ Guide")]:
+            st.markdown("""
+                ## Overview & Instructions
 
-                    Welcome to **PropSaber**, a next-generation real estate simulation model built for serious multifamily investors.
+                Welcome to **PropSaber**, a next-generation real estate simulation model built for serious multifamily investors.
 
-                    PropSaber replaces oversimplified spreadsheets with a dynamic, scenario-based engine—giving you insights into how deals might *actually* perform, not just how they look on paper.
+                PropSaber replaces oversimplified spreadsheets with a dynamic, scenario-based engine—giving you insights into how deals might *actually* perform, not just how they look on paper.
 
-                    Is it complicated? Yes and no.
+                Is it complicated? Yes and no.
 
-                    Under the hood, it’s powered by a sophisticated simulation engine using Monte Carlo methods, stochastic processes, and regime switching. But on the surface, it’s been designed for **practitioners, by practitioners**, with one clear goal: **help you make better investment decisions**.
+                Under the hood, it’s powered by a sophisticated simulation engine using Monte Carlo methods, stochastic processes, and regime switching. But on the surface, it’s been designed for **practitioners, by practitioners**, with one clear goal: **help you make better investment decisions**.
 
-                    Whether you’re underwriting a stabilized asset, testing downside risk, or trying to impress an investment committee—PropSaber gives you a richer view of returns, risks, and variability, with tools that feel intuitive and grounded in how investors actually think.
+                Whether you’re underwriting a stabilized asset, testing downside risk, or trying to impress an investment committee—PropSaber gives you a richer view of returns, risks, and variability, with tools that feel intuitive and grounded in how investors actually think.
 
-                    ### Quick Start Guide
+                ### Quick Start Guide
 
-                    1.  **Set Inputs**: Use the sidebar on the left. Click `>` to expand sections. Adjust values with the **slider** for quick changes or **type exact numbers** in the box for precision. Defaults are a solid starting point.
-                        * Input fields marked with `($)` expect dollar amounts.
-                        * Fields marked with `(%)` expect percentages (e.g., enter `5.0` for 5%).
-                        * **Financing:** Choose "Fixed" or "Floating" rate types. *Note:* The "Floating" option requires the `Pensford_Forward_Curve.csv` file to be present.
-                    2.  **Run Simulation**: Click the **🚀 Run Simulation** button at the top of the sidebar to generate results based on your inputs.
-                    3.  **Explore Results**: Check the tabs (e.g., Summary, IRR, Pro-Forma, Dynamics, Risk) to see outcomes and risks.
-                    4.  **Iterate**: Tweak inputs and rerun to compare scenarios. The model is designed for rapid iteration.
-                    5.  **Save/Load/Compare**: Use **💾 Scenario Files** in the sidebar or the **🗂️ Scenarios** tab to save, load, or compare different input sets and their results. After loading, click **Run Simulation** again.
+                1.  **Set Inputs**: Use the sidebar on the left. Click `>` to expand sections. Adjust values with the **slider** for quick changes or **type exact numbers** in the box for precision. Defaults are a solid starting point.
+                    * Input fields marked with `($)` expect dollar amounts.
+                    * Fields marked with `(%)` expect percentages (e.g., enter `5.0` for 5%).
+                    * **Financing:** Choose "Fixed" or "Floating" rate types. *Note:* The "Floating" option requires the `Pensford_Forward_Curve.csv` file to be present.
+                2.  **Run Simulation**: Click the **🚀 Run Simulation** button at the top of the sidebar to generate results based on your inputs.
+                3.  **Explore Results**: Check the tabs (e.g., Summary, IRR, Pro-Forma, Dynamics, Risk) to see outcomes and risks.
+                4.  **Iterate**: Tweak inputs and rerun to compare scenarios. The model is designed for rapid iteration.
+                5.  **Save/Load/Compare**: Use **💾 Scenario Files** in the sidebar or the **🗂️ Scenarios** tab to save, load, or compare different input sets and their results. After loading, click **Run Simulation** again.
 
-                    ### Why Use This Tool?
+                ### Why Use This Tool?
 
-                    Most models give you a single outcome. PropSaber shows you the entire range—and how likely each scenario is.
+                Most models give you a single outcome. PropSaber shows you the entire range—and how likely each scenario is.
 
-                    - **Monte Carlo Simulation**: Generates thousands of future scenarios based on your rent, expense, vacancy, and exit assumptions.
-                    - **Realistic Dynamics**: Rent, OpEx, and vacancy evolve over time using **Geometric Brownian Motion** and **mean-reverting** processes, not flat lines. Interest rates (if floating) follow a simulated path based on the forward curve, volatility, and persistence.
-                    - **Market Regime Switching**: Simulates transitions between “Normal” and “Recession” market states using your probability assumptions in the "Rent" section, affecting rent growth.
-                    - **Correlations**: Optionally link random shocks between rent, expenses, and vacancy via the "Correlation" section.
-                    - **Sophisticated Debt Modeling**: Accurately model **Fixed** or **Floating** rate debt, including Interest Only or Amortizing options (Fixed only), realistic floating rate mechanics, and refinancing scenarios (see below).
-                    - **Risk Metrics That Matter**: Outputs include Sharpe ratio, downside probability (Prob. Loss, Prob. Below Hurdle), Value-at-Risk (VaR), Conditional VaR (CVaR), and Coefficient of Variation – all accessible on the "Risk" tab.
+                - **Monte Carlo Simulation**: Generates thousands of future scenarios based on your rent, expense, vacancy, and exit assumptions.
+                - **Realistic Dynamics**: Rent, OpEx, and vacancy evolve over time using **Geometric Brownian Motion** and **mean-reverting** processes, not flat lines. Interest rates (if floating) follow a simulated path based on the forward curve, volatility, and persistence.
+                - **Market Regime Switching**: Simulates transitions between “Normal” and “Recession” market states using your probability assumptions in the "Rent" section, affecting rent growth.
+                - **Correlations**: Optionally link random shocks between rent, expenses, and vacancy via the "Correlation" section.
+                - **Sophisticated Debt Modeling**: Accurately model **Fixed** or **Floating** rate debt, including Interest Only or Amortizing options (Fixed only), realistic floating rate mechanics, and refinancing scenarios (see below).
+                - **Risk Metrics That Matter**: Outputs include Sharpe ratio, downside probability (Prob. Loss, Prob. Below Hurdle), Value-at-Risk (VaR), Conditional VaR (CVaR), and Coefficient of Variation – all accessible on the "Risk" tab.
 
-                    ### Key Features in the Financing Section
+                ### Key Features in the Financing Section
 
-                    The **Financing** section lets you model debt with real-world flexibility, including the ability to simulate a refinancing event:
+                The **Financing** section lets you model debt with real-world flexibility, including the ability to simulate a refinancing event:
 
-                    * **Loan-to-Cost Ratio**: Sets the initial loan amount as a percentage of the purchase price.
-                    * **Rate Type**:
-                        * **Fixed**: Uses the specified "Fixed Loan Interest Rate". You can also choose:
-                            * **Loan Type**: "Interest Only" (no principal paid until sale) or "Amortizing" (principal paid down over the "Amortization Period").
-                        * **Floating**: Simulates a variable rate based on several factors. *Floating rate loans are currently modeled as Interest Only.*
-                            * **Forward SOFR Curve**: The starting point for each year's rate comes from the `Pensford_Forward_Curve.csv` file.
-                            * **Interest Rate Volatility**: Adds random annual shocks (normally distributed noise) to the forward SOFR rate.
-                            * **Rate Persistence (φ)**: Smooths the `SOFR + shock` component over time using an AR(1) process. A value near 0 means little smoothing; a value near 1 means high persistence from year to year.
-                            * **SOFR Floor**: After applying volatility and persistence to the base SOFR rate, the model compares this value to the floor. It takes the **higher** of the two. The rate component (before spread) will not drop below this floor. Enter as a percentage (e.g., `1.0` for 1%).
-                            * **Spread Over SOFR**: This fixed spread is added **last**, after the floor has been applied, to determine the final `effective_rate` used for calculating interest payments.
-                    * **Refinancing Options**: Enable refinancing to model a loan reset during the hold period, reflecting real-world strategies to capitalize on property value appreciation or rate changes:
-                        * **Enable Refinancing**: Check this box to activate refinancing. If unchecked, the original loan terms persist throughout the hold period.
-                        * **Refinancing Year**: Specify the year (e.g., Year 3) when the refinance occurs. The new loan terms apply starting at the beginning of this year.
-                        * **New Loan-to-Value (LTV) Ratio (%)**: Set the target LTV for the new loan, based on the estimated property value in the refinancing year (calculated using NOI and the mean exit cap rate as a proxy).
-                        * **Refinancing Costs (% of Loan)**: Enter the costs associated with refinancing (e.g., 1% of the new loan amount) as a percentage. These costs are deducted from the net cash proceeds or added to the loan balance.
-                        * **New Amortization Period (Years)**: Define the amortization period for the new loan (e.g., 30 years). The refinanced loan is modeled as amortizing, not interest-only.
-                        * **Fixed Rate Spread to SOFR (%)**: Specify the spread added to the SOFR rate in the refinancing year to determine the new fixed interest rate. The model uses the forward SOFR curve for that year as the base rate.
-                        * **Impact on Cash Flows**: Refinancing can generate cash proceeds (if the new loan exceeds the existing balance minus costs) or require cash injection (if the new loan is smaller). These cash flows are reflected in the Levered Cash Flow in the refinancing year, impacting IRR calculations.
+                * **Loan-to-Cost Ratio**: Sets the initial loan amount as a percentage of the purchase price.
+                * **Rate Type**:
+                    * **Fixed**: Uses the specified "Fixed Loan Interest Rate". You can also choose:
+                        * **Loan Type**: "Interest Only" (no principal paid until sale) or "Amortizing" (principal paid down over the "Amortization Period").
+                    * **Floating**: Simulates a variable rate based on several factors. *Floating rate loans are currently modeled as Interest Only.*
+                        * **Forward SOFR Curve**: The starting point for each year's rate comes from the `Pensford_Forward_Curve.csv` file.
+                        * **Interest Rate Volatility**: Adds random annual shocks (normally distributed noise) to the forward SOFR rate.
+                        * **Rate Persistence (φ)**: Smooths the `SOFR + shock` component over time using an AR(1) process. A value near 0 means little smoothing; a value near 1 means high persistence from year to year.
+                        * **SOFR Floor**: After applying volatility and persistence to the base SOFR rate, the model compares this value to the floor. It takes the **higher** of the two. The rate component (before spread) will not drop below this floor. Enter as a percentage (e.g., `1.0` for 1%).
+                        * **Spread Over SOFR**: This fixed spread is added **last**, after the floor has been applied, to determine the final `effective_rate` used for calculating interest payments.
+                * **Refinancing Options**: Enable refinancing to model a loan reset during the hold period, reflecting real-world strategies to capitalize on property value appreciation or rate changes:
+                    * **Enable Refinancing**: Check this box to activate refinancing. If unchecked, the original loan terms persist throughout the hold period.
+                    * **Refinancing Year**: Specify the year (e.g., Year 3) when the refinance occurs. The new loan terms apply starting at the beginning of this year.
+                    * **New Loan-to-Value (LTV) Ratio (%)**: Set the target LTV for the new loan, based on the estimated property value in the refinancing year (calculated using NOI and the mean exit cap rate as a proxy).
+                    * **Refinancing Costs (% of Loan)**: Enter the costs associated with refinancing (e.g., 1% of the new loan amount) as a percentage. These costs are deducted from the net cash proceeds or added to the loan balance.
+                    * **New Amortization Period (Years)**: Define the amortization period for the new loan (e.g., 30 years). The refinanced loan is modeled as amortizing, not interest-only.
+                    * **Fixed Rate Spread to SOFR (%)**: Specify the spread added to the SOFR rate in the refinancing year to determine the new fixed interest rate. The model uses the forward SOFR curve for that year as the base rate.
+                    * **Impact on Cash Flows**: Refinancing can generate cash proceeds (if the new loan exceeds the existing balance minus costs) or require cash injection (if the new loan is smaller). These cash flows are reflected in the Levered Cash Flow in the refinancing year, impacting IRR calculations.
 
-                    ### Exploring Results
+                ### Exploring Results
 
-                    - **Summary Tab**: Shows key KPIs and an initial snapshot based on Year 0 inputs and estimated Year 1 debt service.
-                    - **IRR Tab**: Displays distributions of Unlevered and Levered IRR outcomes, reflecting any refinancing cash flows.
-                    - **Pro-Forma Tab**: Presents the average annual cash flows across all simulations, including income, expenses, CapEx, debt service (interest and principal reflecting fixed/floating rates and refinancing), and sale proceeds.
-                    - **Dynamics Tab**: Visualizes simulation behavior over time, including:
-                        * Rent path distribution vs. underlying fair value rent.
-                        * Vacancy rate distribution per year.
-                        * Relationship between terminal rent growth and exit cap rates.
-                        * *(If Floating Rate)* The distribution of the simulated underlying SOFR rate (SOFR + Volatility + Persistence, *before* Spread) compared to the input Forward SOFR Curve.
-                        * Loan balance and LTV over time, showing the impact of refinancing on debt levels.
-                    - **Risk Tab**: Provides detailed risk metrics based on the Levered IRR distribution, accounting for refinancing variability.
-                    - **Audit Tab**: Allows detailed inspection of the cash flows and metrics for any single simulation run, including refinancing proceeds or costs.
-                    - **Exit Tab**: Shows distributions for the Net Exit Value and the simulated Exit Cap Rate.
-                    - **Sensitivity Tab**: Run sensitivity analyses on key inputs, including refinancing parameters, to see their impact on Mean Levered IRR.
-                    - **Scenarios Tab**: Save named snapshots of your inputs *and results*, load previous scenarios, and compare two scenarios side-by-side, including differences in refinancing strategies.
+                - **Summary Tab**: Shows key KPIs and an initial snapshot based on Year 0 inputs and estimated Year 1 debt service.
+                - **IRR Tab**: Displays distributions of Unlevered and Levered IRR outcomes, reflecting any refinancing cash flows.
+                - **Pro-Forma Tab**: Presents the average annual cash flows across all simulations, including income, expenses, CapEx, debt service (interest and principal reflecting fixed/floating rates and refinancing), and sale proceeds.
+                - **Dynamics Tab**: Visualizes simulation behavior over time, including:
+                    * Rent path distribution vs. underlying fair value rent.
+                    * Vacancy rate distribution per year.
+                    * Relationship between terminal rent growth and exit cap rates.
+                    * *(If Floating Rate)* The distribution of the simulated underlying SOFR rate (SOFR + Volatility + Persistence, *before* Spread) compared to the input Forward SOFR Curve.
+                    * Loan balance and LTV over time, showing the impact of refinancing on debt levels.
+                - **Risk Tab**: Provides detailed risk metrics based on the Levered IRR distribution, accounting for refinancing variability.
+                - **Audit Tab**: Allows detailed inspection of the cash flows and metrics for any single simulation run, including refinancing proceeds or costs.
+                - **Exit Tab**: Shows distributions for the Net Exit Value and the simulated Exit Cap Rate.
+                - **Sensitivity Tab**: Run sensitivity analyses on key inputs, including refinancing parameters, to see their impact on Mean Levered IRR.
+                - **Scenarios Tab**: Save named snapshots of your inputs *and results*, load previous scenarios, and compare two scenarios side-by-side, including differences in refinancing strategies.
 
-                    ---
+                ---
 
-                    *Disclaimer: This is a simulation tool. Results are illustrative and depend heavily on input assumptions. Not financial advice.*
+                *Disclaimer: This is a simulation tool. Results are illustrative and depend heavily on input assumptions. Not financial advice.*
                 """)
 
 
 # --- Entry Point Check ---
 if __name__ == "__main__":
-    main()
+    main() # Ensure standard 4-space indentation
