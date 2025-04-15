@@ -572,13 +572,13 @@ def _render_financing_inputs(
 
 @simulation_error_handler
 def _render_refinancing_inputs(default_inputs: SimulationInputs):
-    """Renders input widgets for refinancing parameters."""
+    """Renders input widgets for refinancing parameters without inline validation."""
     with st.expander("🔄 Refinancing", expanded=False):
         st.checkbox(
             "Enable Refinancing?",
             value=get_input_value("enable_refinancing", default_inputs.enable_refinancing),
             key="input_enable_refinancing",
-            help="If checked, the simulation will attempt a refinance based on the settings below."
+            help="If checked, simulation attempts refinance based on settings below."
         )
 
         enable_refi_state = st.session_state.get("input_enable_refinancing", default_inputs.enable_refinancing)
@@ -589,39 +589,23 @@ def _render_refinancing_inputs(default_inputs: SimulationInputs):
                 value=int(get_input_value("refi_year", default_inputs.refi_year)),
                 key="input_refi_year",
                 format=FMT_INTEGER,
-                help="The specific year during the hold period when the refinance occurs."
+                help="Year during hold period when refinance occurs."
             )
-
-            refi_year_value = st.session_state.get("input_refi_year", default_inputs.refi_year)
-            hold_period_value = st.session_state.get("input_hold_period", default_inputs.hold_period)
-            if int(refi_year_value) > int(hold_period_value):
-                st.warning(f"⚠️ Refinance Year ({refi_year_value}) cannot be greater than Hold Period ({hold_period_value}).")
 
             st.number_input(
                 "New Loan: Fixed Rate Spread to SOFR (%)",
                 min_value=1.0, max_value=5.0, step=0.01,
                 value=float(get_input_value("refi_fixed_rate_spread_to_sofr", default_inputs.refi_fixed_rate_spread_to_sofr)),
-                help="Determines the new fixed interest rate upon refinance.",
+                help="Spread added to SOFR for new fixed rate upon refinance.",
                 key="input_refi_fixed_rate_spread_to_sofr",
                 format=FMT_PERCENT_TWO_DP
             )
 
-            refi_ltv_help = """
-            Target Loan-to-Value for the new loan, based on the property's simulated value in the Refinance Year.
-            Determines cash-out (if New LTV * Value > Old Balance) or cash-in.
-            """
-
-            # Read from session state as decimal, convert explicitly for UI
-            refi_new_ltv_decimal = get_input_value("refi_new_ltv", default_inputs.refi_new_ltv)
-            refi_new_ltv_pct = float(refi_new_ltv_decimal) * 100.0
-
-            # Do NOT modify session state here. Just display and allow input.
-            refi_new_ltv_ui = st.number_input(
+            refi_ltv_help = "Target Loan-to-Value based on property value at refinance."
+            st.number_input(
                 "New Loan: Target LTV (%)",
-                min_value=50.0,
-                max_value=85.0,
-                step=0.01,
-                value=refi_new_ltv_pct,
+                min_value=50.0, max_value=85.0, step=0.01,
+                value=float(get_input_value("refi_new_ltv", default_inputs.refi_new_ltv) * 100.0),
                 help=refi_ltv_help,
                 key="input_refi_new_ltv",
                 format=FMT_PERCENT_TWO_DP
@@ -629,30 +613,23 @@ def _render_refinancing_inputs(default_inputs: SimulationInputs):
 
             st.number_input(
                 "New Loan: Amortization Period (Years)",
-                min_value=5,
-                max_value=30,
-                step=1,
+                min_value=5, max_value=30, step=1,
                 value=int(get_input_value("refi_new_amort_period", default_inputs.refi_new_amort_period)),
-                help="Amortization term for the new fixed-rate loan taken out at refinance.",
+                help="Amortization period for new fixed-rate loan at refinance.",
                 key="input_refi_new_amort_period",
                 format=FMT_INTEGER
             )
 
-            refi_costs_pct_decimal = get_input_value("refi_costs_pct_loan", default_inputs.refi_costs_pct_loan)
-            refi_costs_pct_ui = st.number_input(
+            st.number_input(
                 "Refinancing Costs (% of New Loan)",
-                min_value=0.0,
-                max_value=5.0,
-                step=0.01,
-                value=float(refi_costs_pct_decimal * 100.0),
-                help="Costs associated with the refinance as % of the new loan amount.",
+                min_value=0.0, max_value=5.0, step=0.01,
+                value=float(get_input_value("refi_costs_pct_loan", default_inputs.refi_costs_pct_loan) * 100.0),
+                help="Costs of refinance as percentage of new loan amount.",
                 key="input_refi_costs_pct_loan",
                 format=FMT_PERCENT_TWO_DP
             )
-
         else:
             st.caption("Refinancing disabled.")
-
 
 @simulation_error_handler
 def _render_correlation_inputs(default_inputs: SimulationInputs):
