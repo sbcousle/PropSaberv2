@@ -497,7 +497,7 @@ def _render_financing_inputs(
 
             loan_type_state = st.session_state.get("input_loan_type", default_inputs.loan_type)
             if loan_type_state == LOAN_TYPE_AMORT:
-                st.slider(
+                st.number_input(
                     "Amortization Period (Years)", min_value=5, max_value=40, step=1,
                     value=int(get_input_value("loan_term_yrs", default_inputs.loan_term_yrs)),
                     help="Number of years over which the loan amortizes. Loan is held for the hold period, with remaining balance paid at sale.",
@@ -583,11 +583,11 @@ def _render_refinancing_inputs(default_inputs: SimulationInputs):
 
         enable_refi_state = st.session_state.get("input_enable_refinancing", default_inputs.enable_refinancing)
         if enable_refi_state:
-            st.slider(
+            st.number_input(
                 "Refinance Year",
-                min_value=1, max_value=29,
+                min_value=1, max_value=29, step=1,
                 value=int(get_input_value("refi_year", default_inputs.refi_year)),
-                step=1, key="input_refi_year",
+                key="input_refi_year",
                 format=FMT_INTEGER,
                 help="The specific year during the hold period when the refinance occurs."
             )
@@ -620,7 +620,7 @@ def _render_refinancing_inputs(default_inputs: SimulationInputs):
                 help=refi_ltv_help, key="input_refi_new_ltv",
                 format=FMT_PERCENT_TWO_DP
             )
-            st.slider(
+            st.number_input(
                 "New Loan: Amortization Period (Years)",
                 min_value=5, max_value=30, step=1,
                 value=int(get_input_value("refi_new_amort_period", default_inputs.refi_new_amort_period)),
@@ -637,6 +637,67 @@ def _render_refinancing_inputs(default_inputs: SimulationInputs):
             )
         else:
             st.caption("Refinancing disabled.")
+
+@simulation_error_handler
+def _render_correlation_inputs(default_inputs: SimulationInputs):
+    """Renders input widgets for correlation assumptions."""
+    with st.expander("🔗 Correlation", expanded=False):
+        st.checkbox(
+            "Use Correlations Between Shocks",
+            value=get_input_value("use_correlations", default_inputs.use_correlations),
+            key="input_use_correlations",
+            help="If checked, random shocks to Rent, Expenses, Other Income, and Vacancy will be correlated. If unchecked, shocks are independent."
+        )
+
+        use_corr_state = st.session_state.get("input_use_correlations", default_inputs.use_correlations)
+        if use_corr_state:
+            st.caption("Define correlations between annual random shocks:")
+            corr_re_help = """
+            Correlation between the random shocks affecting Rent growth and Expense growth.
+            Positive value models the tendency for periods of surprisingly high Rent growth to also experience surprisingly high Expense growth (e.g., during high inflation). Use 0 if shocks should be independent.
+            """
+            st.number_input(
+                "Correlation: Rent & Expense Shocks", min_value=-1.0, max_value=1.0, step=0.01,
+                value=float(get_input_value("corr_rent_expense", default_inputs.corr_rent_expense)),
+                help=corr_re_help, key="input_corr_rent_expense", format=FMT_DECIMAL_TWO_DP
+            )
+            corr_ro_help = """
+            Correlation between the random shocks affecting Rent growth and Other Income growth.
+            Positive value models tendency for Other Income (parking, fees) to rise when Rents rise unexpectedly. Use 0 if shocks should be independent.
+            """
+            st.number_input(
+                "Correlation: Rent & Other Income Shocks", min_value=-1.0, max_value=1.0, step=0.01,
+                value=float(get_input_value("corr_rent_other_income", default_inputs.corr_rent_other_income)),
+                help=corr_ro_help, key="input_corr_rent_other_income", format=FMT_DECIMAL_TWO_DP
+            )
+            corr_rv_help = """
+            Correlation between the random shocks affecting Rent growth and Vacancy Rate changes.
+            Typically negative, modeling the tendency for Vacancy to decrease when Rents grow surprisingly fast (and vice-versa). Use 0 if shocks should be independent.
+            """
+            st.number_input(
+                "Correlation: Rent & Vacancy Shocks", min_value=-1.0, max_value=1.0, step=0.01,
+                value=float(get_input_value("corr_rent_vacancy", default_inputs.corr_rent_vacancy)),
+                help=corr_rv_help, key="input_corr_rent_vacancy", format=FMT_DECIMAL_TWO_DP
+            )
+
+@simulation_error_handler
+def _render_risk_metric_inputs(default_inputs: SimulationInputs):
+    """Renders inputs related to risk metric calculations."""
+    with st.expander("🛡️ Risk Metric Settings", expanded=False):
+        st.number_input(
+            "Risk-Free Rate (%/Yr)", min_value=0.0, max_value=10.0, step=0.01,
+            value=float(get_input_value("risk_free_rate", default_inputs.risk_free_rate) * 100.0),
+            help="Annual risk-free rate used for calculating the Sharpe Ratio.",
+            key="input_risk_free_rate",
+            format=FMT_PERCENT_TWO_DP
+        )
+        st.number_input(
+            "Hurdle Rate (% IRR)", min_value=0.0, max_value=25.0, step=0.01,
+            value=float(get_input_value("hurdle_rate", default_inputs.hurdle_rate) * 100.0),
+            help="Target Levered IRR threshold used for calculating the 'Probability Below Hurdle' metric.",
+            key="input_hurdle_rate",
+            format=FMT_PERCENT_TWO_DP
+        )
 
 @simulation_error_handler
 def render_sidebar_inputs(
@@ -673,27 +734,6 @@ def render_sidebar_inputs(
     _render_exit_inputs(defaults)
     st.markdown("---")
     st.subheader("Correlation & Risk")
-    _render_correlations_inputs(defaults)
+    _render_correlation_inputs(defaults)
     _render_risk_metric_inputs(defaults)
     st.markdown("---")
-
-    # Apply button to batch updates
-    if st.button("Apply Input Changes", key="apply_inputs"):
-        updated_inputs = {}
-        for key in SimulationInputs.__annotations__:
-            if not key.startswith('_') and not isinstance(getattr(SimulationInputs, key, None), property):
-                widget_key = f"input_{key}"
-                if widget_key in st.session_state:
-                    value = st.session_state[widget_key]
-                    # Handle special cases
-                    if key in ["market_rent_deviation_pct", "transition_normal_to_recession", "transition_recession_to_normal", "current_vacancy", "stabilized_vacancy", "vacancy_volatility", "loan_to_cost", "initial_loan_costs_pct", "interest_rate", "sofr_spread", "sofr_floor", "transaction_cost_pct", "risk_free_rate", "hurdle_rate", "refi_new_ltv", "refi_costs_pct_loan"]:
-                        value = float(value) / 100.0  # Convert % to decimal
-                    elif key == "is_variable_rate":
-                        value = st.session_state.get("input_rate_type", "Fixed") == "Floating"
-                    elif key == "loan_type":
-                        value = st.session_state.get("input_loan_type", defaults.loan_type)
-                    updated_inputs[key] = value
-                else:
-                    updated_inputs[key] = getattr(defaults, key)
-        st.session_state["inputs"] = updated_inputs
-        st.rerun()
