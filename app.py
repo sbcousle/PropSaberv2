@@ -207,7 +207,7 @@ def main():
 
     # --- Simulation Execution ---
     processed_results = st.session_state.get("processed_results")
-
+         
     if run_sim_button:
         logger.info("Run Simulation button clicked.")
         st.session_state["processed_results"] = None
@@ -230,28 +230,23 @@ def main():
             st.error("Cannot run simulation: Forward curve data failed to load.")
             inputs_valid_for_sim = False
 
-        # --- Begin explicit logical validation checks ---
+        # Begin explicit logical validation checks
         validation_errors = []
 
         if inputs_valid_for_sim:
-            # Refinancing year must not exceed hold period
             if sim_inputs_to_run.enable_refinancing:
                 if sim_inputs_to_run.refi_year > sim_inputs_to_run.hold_period:
                     validation_errors.append(
                         f"Refinance Year ({sim_inputs_to_run.refi_year}) cannot exceed Hold Period ({sim_inputs_to_run.hold_period})."
                     )
 
-            # Additional validation checks can be added here as needed
-
-        # If any validation errors, show them and don't run simulation
         if validation_errors:
             for error_msg in validation_errors:
                 st.error(f"Input Error: {error_msg}")
                 logger.warning(f"Validation failed: {error_msg}")
             inputs_valid_for_sim = False
 
-        # --- End of validation checks ---
-
+        # Execute simulation if inputs are valid
         if inputs_valid_for_sim:
             with st.spinner(f"Running {num_sims_run} simulations..."):
                 mc_results = run_monte_carlo(
@@ -260,6 +255,7 @@ def main():
                     forward_curve=forward_curve_data,
                     std_dev_curve=std_dev_curve_data
                 )
+
             if mc_results is None or 'error' in mc_results:
                 error_message = mc_results.get('error', 'Unknown simulation error.') if mc_results else 'Critical error.'
                 st.error(f"Simulation Error: {error_message}")
@@ -268,26 +264,60 @@ def main():
             else:
                 st.session_state["processed_results"] = mc_results
                 logger.info("Simulation finished successfully.")
-          
-        else:
-            st.warning("Simulation not run due to input errors or missing data.")
 
-        # Define tabs
-        tab_keys = ["📊 Summary", "📈 IRR", "💰 Pro-Forma", "📉 Dynamics", "🛡️ Risk", "🔍 Audit", "🚪 Exit", "🔎 Sensitivity", "🗂️ Scenarios", "ℹ️ Guide"]
-        tabs = st.tabs(tab_keys)
+                # Immediately unpack results into variables
+                processed_results = mc_results
+                metrics = processed_results.get("metrics", {})
+                risk_metrics = processed_results.get("risk_metrics", {})
+                plot_data = processed_results.get("plot_data", {})
+                avg_cash_flow_data = plot_data.get("avg_cash_flows", {})
+                scatter_plot_data = plot_data.get("scatter_plot", {})
+                finite_unlevered = processed_results.get("finite_unlevered_irrs", [])
+                finite_levered = processed_results.get("finite_levered_irrs", [])
+                finite_exit_values = processed_results.get("finite_exit_values", [])
+                finite_exit_caps = processed_results.get("finite_exit_caps", [])
+                sim_results_completed_audit = processed_results.get("raw_results_for_audit", [])
 
-        # --- Populate Tabs ---
-        with tabs[tab_keys.index("📊 Summary")]:
-            st.subheader("Key Performance Indicators (KPIs)")
-            col_kp1, col_kp2, col_kp3 = st.columns(3)
-            mean_l_irr = metrics.get("mean_levered_irr", np.nan); median_l_irr = metrics.get("median_levered_irr", np.nan); p05_l_irr = metrics.get("p05_levered_irr", np.nan)
-            col_kp1.metric("Mean Levered IRR", f"{mean_l_irr:.1%}" if np.isfinite(mean_l_irr) else "N/A"); col_kp1.metric("Median Levered IRR", f"{median_l_irr:.1%}" if np.isfinite(median_l_irr) else "N/A"); col_kp1.metric("5th Pctl Levered IRR (VaR 95%)", f"{p05_l_irr:.1%}" if np.isfinite(p05_l_irr) else "N/A")
-            mean_exit_val = metrics.get("mean_exit_value", np.nan); mean_exit_cap = metrics.get("mean_exit_cap", np.nan)
-            col_kp2.metric("Mean Net Exit Value", f"${mean_exit_val:,.0f}" if np.isfinite(mean_exit_val) else "N/A"); col_kp2.metric("Mean Exit Cap Rate", f"{mean_exit_cap*100:.2f}%" if np.isfinite(mean_exit_cap) else "N/A")
-            prob_loss = risk_metrics.get("Prob. Loss (IRR < 0%)", np.nan); prob_hurdle = risk_metrics.get("Prob. Below Hurdle", np.nan)
-            hurdle_rate_disp = getattr(inputs_used_for_run, 'hurdle_rate', np.nan) if inputs_used_for_run else np.nan
-            hurdle_label = f"Prob < {hurdle_rate_disp:.0%} Hurdle" if np.isfinite(hurdle_rate_disp) else "Prob < Hurdle"
-            col_kp3.metric("Prob. Loss (IRR < 0%)", f"{prob_loss:.1%}" if np.isfinite(prob_loss) else "N/A"); col_kp3.metric(hurdle_label, f"{prob_hurdle:.1%}" if np.isfinite(prob_hurdle) else "N/A"); sharpe = risk_metrics.get("Sharpe Ratio", np.nan); col_kp3.metric("Sharpe Ratio", f"{sharpe:.2f}" if np.isfinite(sharpe) else "N/A")
+                # Ensure input objects are created again for display
+                try:
+                    inputs_used_for_run = SimulationInputs(**st.session_state['inputs'])
+                    inputs_valid_for_display = True
+                except Exception as e:
+                    st.error(f"Error recreating inputs object for display: {e}")
+                    inputs_valid_for_display = False
+                    inputs_used_for_run = None
+
+                # Define and populate UI tabs
+                tab_keys = ["📊 Summary", "📈 IRR", "💰 Pro-Forma", "📉 Dynamics", "🛡️ Risk", "🔍 Audit", "🚪 Exit", "🔎 Sensitivity", "🗂️ Scenarios", "ℹ️ Guide"]
+                tabs = st.tabs(tab_keys)
+
+                with tabs[tab_keys.index("📊 Summary")]:
+                    st.subheader("Key Performance Indicators (KPIs)")
+                    col_kp1, col_kp2, col_kp3 = st.columns(3)
+                    mean_l_irr = metrics.get("mean_levered_irr", np.nan)
+                    median_l_irr = metrics.get("median_levered_irr", np.nan)
+                    p05_l_irr = metrics.get("p05_levered_irr", np.nan)
+
+                    col_kp1.metric("Mean Levered IRR", f"{mean_l_irr:.1%}" if np.isfinite(mean_l_irr) else "N/A")
+                    col_kp1.metric("Median Levered IRR", f"{median_l_irr:.1%}" if np.isfinite(median_l_irr) else "N/A")
+                    col_kp1.metric("5th Pctl Levered IRR (VaR 95%)", f"{p05_l_irr:.1%}" if np.isfinite(p05_l_irr) else "N/A")
+
+                    mean_exit_val = metrics.get("mean_exit_value", np.nan)
+                    mean_exit_cap = metrics.get("mean_exit_cap", np.nan)
+
+                    col_kp2.metric("Mean Net Exit Value", f"${mean_exit_val:,.0f}" if np.isfinite(mean_exit_val) else "N/A")
+                    col_kp2.metric("Mean Exit Cap Rate", f"{mean_exit_cap*100:.2f}%" if np.isfinite(mean_exit_cap) else "N/A")
+
+                    prob_loss = risk_metrics.get("Prob. Loss (IRR < 0%)", np.nan)
+                    prob_hurdle = risk_metrics.get("Prob. Below Hurdle", np.nan)
+
+                    hurdle_rate_disp = getattr(inputs_used_for_run, 'hurdle_rate', np.nan) if inputs_used_for_run else np.nan
+                    hurdle_label = f"Prob < {hurdle_rate_disp:.0%} Hurdle" if np.isfinite(hurdle_rate_disp) else "Prob < Hurdle"
+
+                    col_kp3.metric("Prob. Loss (IRR < 0%)", f"{prob_loss:.1%}" if np.isfinite(prob_loss) else "N/A")
+                    col_kp3.metric(hurdle_label, f"{prob_hurdle:.1%}" if np.isfinite(prob_hurdle) else "N/A")
+                    sharpe = risk_metrics.get("Sharpe Ratio", np.nan)
+                    col_kp3.metric("Sharpe Ratio", f"{sharpe:.2f}" if np.isfinite(sharpe) else "N/A")
 
             # Display Initial State Snapshot (AFTER results exist)
             st.markdown("---"); st.subheader("Year 0 / Initial State Snapshot (Based on Run Inputs)")
