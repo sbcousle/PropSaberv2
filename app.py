@@ -680,15 +680,20 @@ def main():
                      assumption_df.columns = [f"Yr {i+1}" for i in range(hold_period_actual)]
                      assumption_df.index.name = "Assumption"
                      def format_assumption_value(val, label):
-                          if pd.isna(val): return "-"
-                          try:
-                               f_val = float(val)
-                               if "Rent ($/Unit/Mo)" in label: return f"${f_val:,.0f}"
-                               elif "Rate (%)" in label and "Growth" not in label and "Cap" not in label: return f"{f_val:.1%}"
-                               elif "Vacancy Rate (%)" in label : return f"{f_val*100:.1f}%"
-                               elif "%" in label: return f"{f_val:.1f}%"
-                               else: return f"{f_val:.2f}"
-                          except (ValueError, TypeError): return str(val)
+                        if pd.isna(val): return "-"
+                        try:
+                             f_val = float(val)
+                             if "Rent ($/Unit/Mo)" in label: return f"${f_val:,.0f}"
+                             # Use standard % format for Interest Rate, Exit Cap Rate, Vacancy Rate
+                             elif ("Rate (%)" in label and "Growth" not in label): # Covers Interest, Exit Cap, Vacancy
+                                 return f"{f_val:.1%}" # Multiplies by 100, adds %, 1 decimal place
+                             elif "Growth (%)" in label: # Format Growth rates separately if needed (e.g., different precision)
+                                 return f"{f_val:.1f}%" # Appends %, 1 decimal place (Assuming growth stored as percent, e.g. 2.5)
+                             # Note: If growth rates are stored as decimals (e.g. 0.025), use :.1% format instead
+                             else: # Default for other numbers (e.g., sensitivities)
+                                 return f"{f_val:.2f}"
+                        except (ValueError, TypeError):
+                             return str(val) # Fallback for non-numeric
                      formatted_df = assumption_df.apply(lambda row: pd.Series([format_assumption_value(val, row.name) for val in row], index=row.index), axis=1)
                      st.dataframe(formatted_df.style.set_properties(**{"text-align": "right"}).set_table_styles([{"selector": "th", "props": [("text-align", "left")]}]), use_container_width=True)
                 else: st.warning("Could not calculate key assumptions by year.")
@@ -1134,16 +1139,21 @@ def main():
                          assumption_df = pd.DataFrame({label: vals for label, vals in clean_assumptions}).T
                          assumption_df.columns = [f"Yr {i+1}" for i in range(hold_period_audit)]
                          assumption_df.index.name = "Assumption"
-                         def format_assumption_value(val, label): # Keep formatting function
-                              if pd.isna(val): return "-"
-                              try:
-                                   f_val = float(val)
-                                   if "Rent ($/Unit/Mo)" in label: return f"${f_val:,.0f}"
-                                   elif "Rate (%)" in label and "Growth" not in label and "Cap" not in label: return f"{f_val:.1%}"
-                                   elif "Vacancy Rate (%)" in label : return f"{f_val*100:.1f}%"
-                                   elif "%" in label: return f"{f_val:.1f}%"
-                                   else: return f"{f_val:.2f}"
-                              except (ValueError, TypeError): return str(val)
+                         def format_assumption_value(val, label):
+                            if pd.isna(val): return "-"
+                            try:
+                                 f_val = float(val)
+                                 if "Rent ($/Unit/Mo)" in label: return f"${f_val:,.0f}"
+                                 # Use standard % format for Interest Rate, Exit Cap Rate, Vacancy Rate
+                                 elif ("Rate (%)" in label and "Growth" not in label): # Covers Interest, Exit Cap, Vacancy
+                                     return f"{f_val:.1%}" # Multiplies by 100, adds %, 1 decimal place
+                                 elif "Growth (%)" in label: # Format Growth rates separately if needed (e.g., different precision)
+                                     return f"{f_val:.1f}%" # Appends %, 1 decimal place (Assuming growth stored as percent, e.g. 2.5)
+                                 # Note: If growth rates are stored as decimals (e.g. 0.025), use :.1% format instead
+                                 else: # Default for other numbers (e.g., sensitivities)
+                                     return f"{f_val:.2f}"
+                            except (ValueError, TypeError):
+                                 return str(val) # Fallback for non-numeric
                          formatted_df = assumption_df.apply(lambda row: pd.Series([format_assumption_value(val, row.name) for val in row], index=row.index), axis=1)
                          st.dataframe(formatted_df.style.set_properties(**{"text-align": "right"}).set_table_styles([{"selector": "th", "props": [("text-align", "left")]}]), use_container_width=True)
                     else: st.warning("Could not display key assumptions for this simulation.")
