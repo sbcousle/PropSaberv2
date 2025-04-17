@@ -1462,13 +1462,13 @@ def main():
                 col3_cap.metric("5th Pctl", f"{p05_cap*100:.2f}%" if np.isfinite(p05_cap) else "N/A")
                 col4_cap.metric("95th Pctl", f"{p95_cap*100:.2f}%" if np.isfinite(p95_cap) else "N/A")
                 try:
-                    # Calculate histogram
+                    # Calculate histogram with x-axis in percentage
                     min_cap = min(valid_exit_caps)
                     max_cap = max(valid_exit_caps)
                     spread_cap = max_cap - min_cap
                     x_range_cap = (min_cap - spread_cap * 0.1, max_cap + spread_cap * 0.1) if spread_cap > 1e-6 else (min_cap - 0.01, max_cap + 0.01)
                     hist_caps, bin_edges_caps = np.histogram(valid_exit_caps, bins=30, range=x_range_cap)
-                    bin_centers_caps = 0.5 * (bin_edges_caps[1:] + bin_edges_caps[:-1])
+                    bin_centers_caps = [x * 100 for x in (0.5 * (bin_edges_caps[1:] + bin_edges_caps[:-1]))]  # Scale to percentage
                     total_count_caps = sum(hist_caps)
                     percentages_caps = (hist_caps / total_count_caps * 100.0) if total_count_caps > 0 else np.zeros_like(hist_caps)
                     max_y_caps = max(percentages_caps) * 1.20 if any(p > 0 for p in percentages_caps) else 1.0
@@ -1480,12 +1480,12 @@ def main():
                     if np.isfinite(mean_exit_cap):
                         fig_exit_cap.add_shape(
                             type="line",
-                            x0=mean_exit_cap, x1=mean_exit_cap,
+                            x0=mean_exit_cap * 100, x1=mean_exit_cap * 100,  # Scale to percentage
                             y0=0, y1=max_y_caps * 0.90,
                             line=dict(color="red", dash="dash", width=1.5)
                         )
                         fig_exit_cap.add_annotation(
-                            x=mean_exit_cap,
+                            x=mean_exit_cap * 100,
                             y=max_y_caps * 1.05,
                             text=f"Mean: {mean_exit_cap*100:.2f}%",
                             showarrow=False,
@@ -1496,12 +1496,12 @@ def main():
                     if np.isfinite(median_exit_cap):
                         fig_exit_cap.add_shape(
                             type="line",
-                            x0=median_exit_cap, x1=median_exit_cap,
+                            x0=median_exit_cap * 100, x1=median_exit_cap * 100,
                             y0=0, y1=max_y_caps * 0.90,
                             line=dict(color="purple", dash="dash", width=1.5)
                         )
                         fig_exit_cap.add_annotation(
-                            x=median_exit_cap,
+                            x=median_exit_cap * 100,
                             y=max_y_caps * 1.05,
                             text=f"Median: {median_exit_cap*100:.2f}%",
                             showarrow=False,
@@ -1512,12 +1512,12 @@ def main():
                     if np.isfinite(p05_cap):
                         fig_exit_cap.add_shape(
                             type="line",
-                            x0=p05_cap, x1=p05_cap,
+                            x0=p05_cap * 100, x1=p05_cap * 100,
                             y0=0, y1=max_y_caps * 0.90,
                             line=dict(color="darkgrey", dash="dot", width=1.5)
                         )
                         fig_exit_cap.add_annotation(
-                            x=p05_cap,
+                            x=p05_cap * 100,
                             y=max_y_caps * 1.05,
                             text=f"5th: {p05_cap*100:.2f}%",
                             showarrow=False,
@@ -1528,12 +1528,12 @@ def main():
                     if np.isfinite(p95_cap):
                         fig_exit_cap.add_shape(
                             type="line",
-                            x0=p95_cap, x1=p95_cap,
+                            x0=p95_cap * 100, x1=p95_cap * 100,
                             y0=0, y1=max_y_caps * 0.90,
                             line=dict(color="darkgrey", dash="dot", width=1.5)
                         )
                         fig_exit_cap.add_annotation(
-                            x=p95_cap,
+                            x=p95_cap * 100,
                             y=max_y_caps * 1.05,
                             text=f"95th: {p95_cap*100:.2f}%",
                             showarrow=False,
@@ -1551,7 +1551,7 @@ def main():
                         template="plotly_white",
                         yaxis_ticksuffix="%"
                     )
-                    fig_exit_cap.update_xaxes(ticksuffix="%", tickformat=".2f", range=x_range_cap)
+                    fig_exit_cap.update_xaxes(ticksuffix="%", tickformat=".1f", range=[x * 100 for x in x_range_cap])
                     st.plotly_chart(fig_exit_cap, use_container_width=True)
                     st.caption(
                         "Shows the frequency distribution of potential Exit Cap Rates at sale. This is influenced by the 'Average Exit Cap Rate' input, "
