@@ -3,12 +3,6 @@ Contains the core simulation logic:
 - run_monte_carlo: Orchestrates multiple simulation runs.
 - run_single_simulation: Executes one full simulation path.
 - Helper functions for state initialization, annual updates, exit calculations, IRR.
-
-MODIFIED:
-- _initialize_simulation_state: Calculates and stores initial monthly payment.
-- _update_annual_state: Calculates new monthly payment on refi, passes
-  stored monthly payment to calculate_debt_service.
-- Refinancing logic confirmed as end-of-year.
 """
 
 import numpy as np
@@ -81,13 +75,23 @@ def update_regime(current_regime: int, p_normal_to_recession: float, p_recession
     else:
         return 0 if transition_prob < p_recession_to_normal else 1
 
+def _pad_list_safe(data_list: Optional[List[Any]], expected_len: int, pad_value: Any = np.nan) -> List[Any]:
+    """
+    Safely pads or truncates a list to the expected length, handling None cases.
+    """
+    if data_list is None:
+        return [pad_value] * expected_len
+    base_list = list(data_list)
+    actual_len = len(base_list)
+    if actual_len == expected_len:
+        return base_list
+    elif actual_len < expected_len:
+        return base_list + ([pad_value] * (expected_len - actual_len))
+    else:
+        return base_list[:expected_len]
+
 @simulation_error_handler
 def _initialize_simulation_state(inputs: SimulationInputs) -> Optional[Dict[str, Any]]:
-    """
-    Initializes the state dictionary for a single simulation run.
-    MODIFIED: Calculates and stores initial monthly payment.
-    Returns None on critical error.
-    """
     try:
         initial_deviation = inputs.market_rent_deviation_pct
         market_rent_per_unit = inputs.base_rent
@@ -120,6 +124,13 @@ def _initialize_simulation_state(inputs: SimulationInputs) -> Optional[Dict[str,
                 initial_monthly_payment = loan_amount / periods
             logger.info(f"Initialized with Monthly Payment: {initial_monthly_payment:.2f}")
 
+        if inputs.hold_period < 1:
+            logger.error(f"Invalid hold_period: {inputs.hold_period}. Must be >= 1.")
+            return None
+
+        years = list(range(1, inputs.hold_period + 1))
+        logger.debug(f"Initialized years: {years}")
+
         state = {
             "market_rent_per_unit": market_rent_per_unit,
             "normal_rent_per_unit": normal_rent_per_unit,
@@ -144,7 +155,7 @@ def _initialize_simulation_state(inputs: SimulationInputs) -> Optional[Dict[str,
             "current_is_variable_rate": is_variable,
             "last_refi_year": -1,
             "current_monthly_payment": initial_monthly_payment,
-            "years": list(range(1, inputs.hold_period + 1)),
+            "years": years,
             "annual_market_rent_per_unit": [],
             "annual_normal_rent_per_unit": [],
             "annual_potential_rent": [],
@@ -177,6 +188,10 @@ def _initialize_simulation_state(inputs: SimulationInputs) -> Optional[Dict[str,
         ]
         if not all(np.isfinite(v) for v in initial_numeric_state):
             logger.error(f"Non-finite value detected in initial state: {state}")
+            return None
+
+        if not state["years"] or len(state["years"]) != inputs.hold_period:
+            logger.error(f"Years list invalid: {state['years']}. Expected length: {inputs.hold_period}")
             return None
 
         logger.debug(f"Initialized simulation state: {state}")
@@ -226,9 +241,6 @@ def _update_annual_state(
 ) -> Optional[Dict[str, Any]]:
     """
     Updates the simulation state for a single year.
-    MODIFIED: Calculates new monthly payment on refi, passes
-              stored monthly payment to calculate_debt_service.
-    Refinancing logic confirmed as end-of-year.
     """
     try:
         refi_costs_this_year = 0.0
@@ -433,11 +445,11 @@ def _update_annual_state(
         state["prev_other_inc_shock"] = shocks["other_inc_shock"]
         state["prev_expense_shock"] = shocks["expense_shock"]
 
+        logger.debug(f"Year {year}: Years after update: {state.get('years')}")
+        return state
     except Exception as e:
         logger.error(f"Unhandled exception in _update_annual_state Year {year}: {e}", exc_info=True)
         return None
-
-    return state
 
 def _calculate_exit_values(inputs: SimulationInputs, state: Dict[str, Any], L_matrix: np.ndarray) -> Tuple[float, float, float, float, float]:
     try:
@@ -512,7 +524,7 @@ def _calculate_irr(inputs: SimulationInputs, state: Dict[str, Any], final_unleve
         levered_stream = [initial_equity_investment] + levered_op_cfs + [final_levered_cf_safe]
     else:
         logger.warning(f"Levered CF list mismatch/empty.")
-        levered_stream = [initial_equity_investment, final_levered_cf_safe]
+        unlevered_stream = [initial_equity_investment, final_levered_cf_safe]
     failed_unlevered = False
     failed_levered = False
     unlevered_irr = np.nan
@@ -559,53 +571,110 @@ def run_single_simulation(sim_index: int, inputs: SimulationInputs, L_matrix: np
     unlevered_stream, levered_stream = [], []
     failed_unlevered_irr, failed_levered_irr = True, True
     term_rent_growth = np.nan
+    unlevered_multiple = np.nan
+    levered_multiple = np.nan
+
     try:
         state = _initialize_simulation_state(inputs)
         if state is None:
             logger.error(f"Run #{sim_index + 1}: State init failed.")
             return None
+
+        logger.debug(f"Run #{sim_index + 1}: Initial years: {state.get('years')}")
+
         hold_period = max(1, inputs.hold_period)
         raw_shocks = generate_correlated_shocks(L_matrix, hold_period)
         if raw_shocks is None or raw_shocks.shape[0] != hold_period:
             logger.error(f"Run #{sim_index + 1}: Shock gen failed.")
             return None
+
         years_to_simulate = state.get("years", list(range(1, hold_period + 1)))
         for year_idx, year in enumerate(years_to_simulate):
             state = _update_annual_state(year_idx, year, inputs, state, raw_shocks[year_idx, :], forward_curve, std_dev_curve)
             if state is None:
                 logger.error(f"Run #{sim_index + 1}: Failed update Year {year}.")
                 return None
+
         if state is None:
             logger.error(f"Run #{sim_index + 1}: State None after loop.")
             return None
+
+        logger.debug(f"Run #{sim_index + 1}: Years after simulation: {state.get('years')}")
+
         sim_exit_cap, exit_value_net, final_unlevered_cf, final_levered_cf, term_rent_growth = _calculate_exit_values(inputs, state, L_matrix)
         if not all(np.isfinite(v) for v in [sim_exit_cap, exit_value_net, final_unlevered_cf, final_levered_cf, term_rent_growth]):
-            logger.error(f"Run #{sim_index + 1}: Exit calc failed.")
+            logger.warning(f"Run #{sim_index + 1}: Exit calc produced non-finite results.")
+
         unlevered_irr, levered_irr, unlevered_stream, levered_stream, failed_unlevered_irr, failed_levered_irr = _calculate_irr(inputs, state, final_unlevered_cf, final_levered_cf)
         logger.debug(f"Run #{sim_index + 1}: IRR Results - Unlev={unlevered_irr}, Lev={levered_irr}")
+
+        try:
+            initial_investment = abs(inputs.purchase_price)
+            if unlevered_stream and len(unlevered_stream) > 1:
+                total_positive_unlevered_cf = sum(cf for cf in unlevered_stream[1:] if cf > 0 and np.isfinite(cf))
+                total_negative_unlevered_cf_abs = sum(abs(cf) for cf in unlevered_stream[1:] if cf < 0 and np.isfinite(cf))
+                unlevered_denominator = initial_investment + total_negative_unlevered_cf_abs
+                if unlevered_denominator > FLOAT_ATOL:
+                    unlevered_multiple = total_positive_unlevered_cf / unlevered_denominator
+                else:
+                    logger.warning(f"Run #{sim_index + 1}: Unlev Mult denominator near zero.")
+                    unlevered_multiple = np.nan
+                if not np.isfinite(unlevered_multiple):
+                    unlevered_multiple = np.nan
+            else:
+                logger.warning(f"Run #{sim_index + 1}: Cannot calculate Unlev Mult - invalid stream/investment.")
+                unlevered_multiple = np.nan
+
+            initial_equity = abs(inputs.initial_equity)
+            if levered_stream and len(levered_stream) > 1:
+                total_positive_levered_cf = sum(cf for cf in levered_stream[1:] if cf > 0 and np.isfinite(cf))
+                total_negative_levered_cf_abs = sum(abs(cf) for cf in levered_stream[1:] if cf < 0 and np.isfinite(cf))
+                levered_denominator = initial_equity + total_negative_levered_cf_abs
+                if levered_denominator > FLOAT_ATOL:
+                    levered_multiple = total_positive_levered_cf / levered_denominator
+                else:
+                    logger.warning(f"Run #{sim_index + 1}: Lev Mult denominator near zero.")
+                    unlevered_multiple = np.nan
+                if not np.isfinite(levered_multiple):
+                    levered_multiple = np.nan
+            else:
+                logger.warning(f"Run #{sim_index + 1}: Cannot calculate Lev Mult - invalid stream/equity.")
+                levered_multiple = np.nan
+
+            logger.debug(f"Run #{sim_index + 1}: Multiples - Unlev={unlevered_multiple:.2f}x, Lev={levered_multiple:.2f}x")
+
+        except Exception as e_mult:
+            logger.error(f"Run #{sim_index + 1}: Error calculating equity multiples: {e_mult}", exc_info=True)
+            unlevered_multiple = np.nan
+            levered_multiple = np.nan
+
     except Exception as e:
         logger.error(f"Error during single sim run #{sim_index + 1}: {e}", exc_info=True)
         return None
-    expected_len = inputs.hold_period
-    def _pad_list_safe(data_list: Optional[List[Any]], expected_len: int, pad_value: Any = np.nan) -> List[Any]:
-        if data_list is None:
-            return [pad_value] * expected_len
-        base_list = list(data_list)
-        actual_len = len(base_list)
-        if actual_len == expected_len:
-            return base_list
-        elif actual_len < expected_len:
-            return base_list + ([pad_value] * (expected_len - actual_len))
-        else:
-            return base_list[:expected_len]
+
     if state is None:
-        logger.error(f"Run #{sim_index + 1}: State None before results packaging.")
+        logger.error(f"Run #{sim_index + 1}: State is None before results packaging.")
         return None
+
+    expected_len = inputs.hold_period
+    required_keys = [
+        "years", "annual_market_rent_per_unit", "annual_normal_rent_per_unit", "annual_potential_rent",
+        "annual_vacancy_rate", "annual_vacancy_loss", "annual_effective_gross_rent", "annual_other_income",
+        "annual_effective_gross_income", "annual_expenses", "annual_capex", "annual_noi", "annual_interest",
+        "annual_principal", "annual_unlevered_cf", "annual_levered_cf", "annual_loan_balance",
+        "annual_rent_growth_pct", "annual_other_income_growth_pct", "annual_expense_growth_pct",
+        "annual_capex_growth_pct", "annual_interest_rates", "annual_refi_costs", "annual_refi_proceeds_net",
+        "annual_property_value_estimate", "annual_ltv_estimate"
+    ]
+    for key in required_keys:
+        if key not in state:
+            logger.warning(f"Run #{sim_index + 1}: Key '{key}' missing from state.")
+            state[key] = []
+
     results = {
-        "unlevered_irr": unlevered_irr,
-        "levered_irr": levered_irr,
-        "exit_value_net": exit_value_net,
-        "sim_exit_cap_rate": sim_exit_cap,
+        "unlevered_irr": unlevered_irr, "levered_irr": levered_irr,
+        "unlevered_multiple": unlevered_multiple, "levered_multiple": levered_multiple,
+        "exit_value_net": exit_value_net, "sim_exit_cap_rate": sim_exit_cap,
         "years": _pad_list_safe(state.get("years"), expected_len, 0),
         "rent_per_unit": _pad_list_safe(state.get("annual_market_rent_per_unit"), expected_len),
         "normal_rent_per_unit": _pad_list_safe(state.get("annual_normal_rent_per_unit"), expected_len),
@@ -623,8 +692,7 @@ def run_single_simulation(sim_index: int, inputs: SimulationInputs, L_matrix: np
         "unlevered_cf": _pad_list_safe(state.get("annual_unlevered_cf"), expected_len),
         "levered_cf": _pad_list_safe(state.get("annual_levered_cf"), expected_len),
         "loan_balance": _pad_list_safe(state.get("annual_loan_balance"), expected_len),
-        "unlevered_stream_irr": unlevered_stream,
-        "levered_stream_irr": levered_stream,
+        "unlevered_stream_irr": unlevered_stream, "levered_stream_irr": levered_stream,
         "terminal_yr_rent_growth_pct": term_rent_growth,
         "rent_growth_pct": _pad_list_safe(state.get("annual_rent_growth_pct"), expected_len),
         "other_inc_growth_pct": _pad_list_safe(state.get("annual_other_income_growth_pct"), expected_len),
@@ -635,14 +703,16 @@ def run_single_simulation(sim_index: int, inputs: SimulationInputs, L_matrix: np
         "refi_proceeds_net": _pad_list_safe(state.get("annual_refi_proceeds_net"), expected_len),
         "property_value_estimate": _pad_list_safe(state.get("annual_property_value_estimate"), expected_len),
         "ltv_estimate": _pad_list_safe(state.get("annual_ltv_estimate"), expected_len),
-        "failed_unlevered_irr": failed_unlevered_irr,
-        "failed_levered_irr": failed_levered_irr
+        "failed_unlevered_irr": failed_unlevered_irr, "failed_levered_irr": failed_levered_irr
     }
     logger.info(f"Finished simulation run #{sim_index + 1} successfully.")
     return results
 
 @simulation_error_handler
 def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curve: Dict[int, float], std_dev_curve: Dict[int, float]) -> Dict[str, Any]:
+    """
+    Runs multiple simulation paths, aggregates results including IRRs and Equity Multiples.
+    """
     start_time = time.time()
     logger.info(f"Starting Monte Carlo: {num_simulations} sims, Hold: {inputs.hold_period} yrs.")
     try:
@@ -655,18 +725,17 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
     except Exception as e:
         logger.error(f"Pre-computation error: {e}", exc_info=True)
         return {"error": f"Pre-computation failed: {e}"}
+
     all_results = []
     try:
         logger.info(f"Starting parallel execution: {num_simulations} tasks...")
         with Parallel(n_jobs=-1, backend="loky") as parallel:
-            all_results = parallel(
-                delayed(run_single_simulation)(i, inputs, L_matrix, forward_curve, std_dev_curve)
-                for i in range(num_simulations)
-            )
+            all_results = parallel(delayed(run_single_simulation)(i, inputs, L_matrix, forward_curve, std_dev_curve) for i in range(num_simulations))
         logger.info(f"Parallel exec completed. Received {len(all_results)} results.")
     except Exception as e:
         logger.error(f"Parallel exec error: {e}", exc_info=True)
         return {"error": f"Simulation parallel exec failed: {e}"}
+
     sim_results_completed = [r for r in all_results if r is not None and isinstance(r, dict)]
     num_total_sims = len(all_results)
     num_completed_sims = len(sim_results_completed)
@@ -675,21 +744,22 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
     if not sim_results_completed:
         logger.error("No simulations completed successfully.")
         return {"error": "No simulations completed.", "inputs_used": inputs.to_dict()}
+
     metrics: Dict[str, Any] = {}
     risk_metrics: Dict[str, Any] = {}
     plot_data: Dict[str, Any] = {}
     raw_metrics_lists = {
-        "unlevered_irrs": [],
-        "levered_irrs": [],
-        "exit_values": [],
-        "exit_caps": [],
-        "loan_payoffs": []
+        "unlevered_irrs": [], "levered_irrs": [], "unlevered_multiples": [], "levered_multiples": [],
+        "exit_values": [], "exit_caps": [], "loan_payoffs": []
     }
     unlevered_failure_count = 0
     levered_failure_count = 0
+
     for r in sim_results_completed:
         raw_metrics_lists["unlevered_irrs"].append(r.get("unlevered_irr", np.nan))
         raw_metrics_lists["levered_irrs"].append(r.get("levered_irr", np.nan))
+        raw_metrics_lists["unlevered_multiples"].append(r.get("unlevered_multiple", np.nan))
+        raw_metrics_lists["levered_multiples"].append(r.get("levered_multiple", np.nan))
         raw_metrics_lists["exit_values"].append(r.get("exit_value_net", np.nan))
         raw_metrics_lists["exit_caps"].append(r.get("sim_exit_cap_rate", np.nan))
         lb = r.get("loan_balance")
@@ -698,57 +768,71 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
             unlevered_failure_count += 1
         if r.get("failed_levered_irr", True):
             levered_failure_count += 1
+
+    # --- Calculate Statistics for Key Metrics ---
     def calculate_finite_stats(data: List[float], prefix: str) -> Tuple[Dict[str, Any], List[float]]:
         finite_data = [x for x in data if x is not None and np.isfinite(x)]
         stats = {}
         if finite_data:
-            stats[f"mean_{prefix}"] = float(np.mean(finite_data))
-            stats[f"p05_{prefix}"] = float(np.percentile(finite_data, 5))
-            stats[f"p95_{prefix}"] = float(np.percentile(finite_data, 95))
-            stats[f"median_{prefix}"] = float(np.median(finite_data))
+            try:
+                stats[f"mean_{prefix}"] = float(np.mean(finite_data))
+                stats[f"p05_{prefix}"] = float(np.percentile(finite_data, 5))
+                stats[f"median_{prefix}"] = float(np.median(finite_data))
+                stats[f"p95_{prefix}"] = float(np.percentile(finite_data, 95))
+            except Exception as e_stat:
+                logger.error(f"Error calculating stats for {prefix}: {e_stat}", exc_info=True)
+                stats = {f"mean_{prefix}": np.nan, f"p05_{prefix}": np.nan, f"median_{prefix}": np.nan, f"p95_{prefix}": np.nan}
         else:
             logger.warning(f"No finite data for '{prefix}'.")
-            stats[f"mean_{prefix}"] = np.nan
-            stats[f"p05_{prefix}"] = np.nan
-            stats[f"p95_{prefix}"] = np.nan
-            stats[f"median_{prefix}"] = np.nan
+            stats = {k: np.nan for k in [f"mean_{prefix}", f"p05_{prefix}", f"median_{prefix}", f"p95_{prefix}"]}
         return stats, finite_data
-    unlevered_irr_stats, finite_unlevered = calculate_finite_stats(raw_metrics_lists["unlevered_irrs"], "unlevered_irr")
+
+    unlevered_irr_stats, finite_unlevered_irrs = calculate_finite_stats(raw_metrics_lists["unlevered_irrs"], "unlevered_irr")
     metrics.update(unlevered_irr_stats)
-    levered_irr_stats, finite_levered = calculate_finite_stats(raw_metrics_lists["levered_irrs"], "levered_irr")
+    levered_irr_stats, finite_levered_irrs = calculate_finite_stats(raw_metrics_lists["levered_irrs"], "levered_irr")
     metrics.update(levered_irr_stats)
+    unlevered_mult_stats, finite_unlevered_multiples = calculate_finite_stats(raw_metrics_lists["unlevered_multiples"], "unlevered_multiple")
+    metrics.update(unlevered_mult_stats)
+    levered_mult_stats, finite_levered_multiples = calculate_finite_stats(raw_metrics_lists["levered_multiples"], "levered_multiple")
+    metrics.update(levered_mult_stats)
     exit_value_stats, finite_exit_values = calculate_finite_stats(raw_metrics_lists["exit_values"], "exit_value")
     metrics.update(exit_value_stats)
-    finite_exit_caps = [cap for cap in raw_metrics_lists["exit_caps"] if cap is not None and np.isfinite(cap)]
-    metrics["mean_exit_cap"] = float(np.mean(finite_exit_caps)) if finite_exit_caps else np.nan
-    metrics["median_exit_cap"] = float(np.median(finite_exit_caps)) if finite_exit_caps else np.nan
+    finite_exit_caps_list = [cap for cap in raw_metrics_lists["exit_caps"] if cap is not None and np.isfinite(cap)]
+    metrics["mean_exit_cap"] = float(np.mean(finite_exit_caps_list)) if finite_exit_caps_list else np.nan
+    metrics["median_exit_cap"] = float(np.median(finite_exit_caps_list)) if finite_exit_caps_list else np.nan
     finite_loan_payoffs = [p for p in raw_metrics_lists["loan_payoffs"] if p is not None and np.isfinite(p)]
     metrics["mean_loan_payoff"] = float(np.mean(finite_loan_payoffs)) if finite_loan_payoffs else np.nan
+
+    # --- Calculate Risk Metrics (Based on Levered IRR) ---
     risk_metric_keys = ["Std Dev IRR", "Sharpe Ratio", "Coefficient of Variation", "Prob. Loss (IRR < 0%)", "Prob. Below Hurdle", "Value at Risk (VaR 95%)", "Cond. VaR (CVaR 95%)"]
-    if finite_levered:
+    if finite_levered_irrs:
         mean_l_irr = metrics.get("mean_levered_irr", np.nan)
         p05_l_irr = metrics.get("p05_levered_irr", np.nan)
         if np.isfinite(mean_l_irr):
-            std_l_irr = np.std(finite_levered)
+            std_l_irr = np.std(finite_levered_irrs) if len(finite_levered_irrs) > 1 else 0.0
+            if not np.isfinite(std_l_irr):
+                std_l_irr = np.nan
             risk_free = inputs.risk_free_rate
             hurdle = inputs.hurdle_rate
             risk_metrics["Std Dev IRR"] = std_l_irr
-            risk_metrics["Sharpe Ratio"] = (mean_l_irr - risk_free) / std_l_irr if std_l_irr > FLOAT_ATOL else np.nan
-            risk_metrics["Coefficient of Variation"] = std_l_irr / abs(mean_l_irr) if abs(mean_l_irr) > FLOAT_ATOL else np.nan
-            risk_metrics["Prob. Loss (IRR < 0%)"] = np.mean(np.array(finite_levered) < 0.0)
-            risk_metrics["Prob. Below Hurdle"] = np.mean(np.array(finite_levered) < hurdle)
+            risk_metrics["Sharpe Ratio"] = (mean_l_irr - risk_free) / std_l_irr if std_l_irr is not None and std_l_irr > FLOAT_ATOL else np.nan
+            risk_metrics["Coefficient of Variation"] = std_l_irr / abs(mean_l_irr) if std_l_irr is not None and abs(mean_l_irr) > FLOAT_ATOL else np.nan
+            risk_metrics["Prob. Loss (IRR < 0%)"] = np.mean(np.array(finite_levered_irrs) < 0.0)
+            risk_metrics["Prob. Below Hurdle"] = np.mean(np.array(finite_levered_irrs) < hurdle)
             risk_metrics["Value at Risk (VaR 95%)"] = p05_l_irr
             if np.isfinite(p05_l_irr):
-                cvar_irrs = [irr for irr in finite_levered if irr <= p05_l_irr]
+                cvar_irrs = [irr for irr in finite_levered_irrs if irr <= p05_l_irr]
                 risk_metrics["Cond. VaR (CVaR 95%)"] = np.mean(cvar_irrs) if cvar_irrs else np.nan
             else:
                 risk_metrics["Cond. VaR (CVaR 95%)"] = np.nan
         else:
-            logger.warning("Mean Levered IRR NaN, risk metrics skipped.")
+            logger.warning("Mean Levered IRR is NaN, risk metrics skipped.")
             risk_metrics = {k: np.nan for k in risk_metric_keys}
     else:
-        logger.warning("No finite Levered IRR data for risk metrics.")
+        logger.warning("No finite Levered IRR data available, risk metrics skipped.")
         risk_metrics = {k: np.nan for k in risk_metric_keys}
+
+    # --- Prepare Plotting Data ---
     hold_period_actual = inputs.hold_period
     years_list = list(range(1, hold_period_actual + 1))
     plot_data["years"] = years_list
@@ -765,7 +849,6 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
             rent_norm_plot["normal_p50"] = np.percentile(normal_rent_arr, 50, axis=0).tolist()
         except Exception as e:
             logger.error(f"Error processing rent percentiles: {e}")
-            rent_norm_plot = {}
     plot_data["rent_norm_plot"] = rent_norm_plot
     vacancy_plot_df = None
     vacancy_paths = get_valid_paths(sim_results_completed, "vacancy_rate", hold_period_actual)
@@ -777,8 +860,8 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
                 for sim_run_vacancy in vacancy_array[:, i]:
                     vacancy_df_prep.append({"Year": year, "Vacancy Rate": sim_run_vacancy})
             vacancy_plot_df = pd.DataFrame(vacancy_df_prep)
-        except Exception as e:
-            logger.error(f"Error processing vacancy plot data: {e}")
+        except Exception as e_vac_plot:
+            logger.error(f"Error processing vacancy plot data: {e_vac_plot}")
             vacancy_plot_df = None
     plot_data["vacancy_plot_df"] = vacancy_plot_df
     scatter_plot_data = {"term_rent_growth_pct": [], "exit_cap_rate_pct": []}
@@ -789,11 +872,10 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
     plot_data["scatter_plot"] = scatter_plot_data
     avg_data = {}
     avg_data_keys = [
-        "potential_rent", "vacancy_loss", "egr", "other_income", "egi", "expenses",
-        "capex", "noi", "interest", "principal", "unlevered_cf", "levered_cf",
-        "loan_balance", "vacancy_rate", "rent_per_unit", "rent_growth_pct",
-        "other_inc_growth_pct", "expense_growth_pct", "capex_growth_pct",
-        "interest_rates", "refi_costs", "refi_proceeds_net",
+        "potential_rent", "vacancy_loss", "egr", "other_income", "egi", "expenses", "capex", "noi",
+        "interest", "principal", "unlevered_cf", "levered_cf", "loan_balance", "vacancy_rate",
+        "rent_per_unit", "rent_growth_pct", "other_inc_growth_pct", "expense_growth_pct",
+        "capex_growth_pct", "interest_rates", "refi_costs", "refi_proceeds_net",
         "property_value_estimate", "ltv_estimate"
     ]
     for key in avg_data_keys:
@@ -808,19 +890,24 @@ def run_monte_carlo(inputs: SimulationInputs, num_simulations: int, forward_curv
             logger.warning(f"No valid paths found for averaging key '{key}'.")
             avg_data[key] = [np.nan] * hold_period_actual
     plot_data["avg_cash_flows"] = avg_data
+
+    # --- Final Formatting and Return Dictionary ---
     final_metrics = {k: float(v) if isinstance(v, (np.number, np.bool_)) else v for k, v in metrics.items()}
-    final_risk_metrics = {k: float(v) if isinstance(v, (np.number, np.bool_)) else v for k, v in risk_metrics.items()}
+    final_risk_metrics = {k: float(v) if isinstance(v, (np.number, np.bool_)) else v for k, v in risk_metrics.items()} if risk_metrics else {}
     end_time = time.time()
     logger.info(f"Monte Carlo finished. Completed: {num_completed_sims}/{num_total_sims}. Time: {end_time - start_time:.2f}s.")
+
     return {
         "metrics": final_metrics,
         "risk_metrics": final_risk_metrics,
         "plot_data": plot_data,
         "raw_results_for_audit": sim_results_completed,
-        "finite_unlevered_irrs": finite_unlevered,
-        "finite_levered_irrs": finite_levered,
+        "finite_unlevered_irrs": finite_unlevered_irrs,
+        "finite_levered_irrs": finite_levered_irrs,
+        "finite_unlevered_multiples": finite_unlevered_multiples,
+        "finite_levered_multiples": finite_levered_multiples,
         "finite_exit_values": finite_exit_values,
-        "finite_exit_caps": finite_exit_caps,
+        "finite_exit_caps": finite_exit_caps_list,
         "unlev_forced_failures": unlevered_failure_count,
         "lev_forced_failures": levered_failure_count,
         "config_num_simulations": num_simulations,
